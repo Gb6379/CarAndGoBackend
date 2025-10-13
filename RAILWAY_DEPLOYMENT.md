@@ -15,6 +15,20 @@ Example:
 DATABASE_URL=postgresql://postgres:abc123@containers-us-west-123.railway.app:6543/railway
 ```
 
+### Database Synchronization (Auto-Create Tables)
+
+**For FIRST deployment only**, set this to automatically create tables:
+
+```
+DB_SYNCHRONIZE=true
+```
+
+⚠️ **IMPORTANT**: After the first successful deployment, set this to `false` or remove it to prevent accidental data loss:
+
+```
+DB_SYNCHRONIZE=false
+```
+
 ### Other Required Environment Variables
 
 ```bash
