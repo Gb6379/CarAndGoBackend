@@ -10,8 +10,8 @@ export class DatabaseConfig implements TypeOrmOptionsFactory {
     // Check if DATABASE_URL is provided (Railway/Heroku style)
     const databaseUrl = process.env.DATABASE_URL;
     
-    // Enable synchronize if explicitly set to 'true' or in development
-    const enableSynchronize = process.env.DB_SYNCHRONIZE === 'true' || process.env.NODE_ENV !== 'production';
+    // Always disable synchronize - use migrations instead
+    const enableSynchronize = false;
     
     if (databaseUrl) {
       // Parse DATABASE_URL for Railway/Heroku deployment
