@@ -12,18 +12,30 @@ export class FixVehicleStatusEnumCase1728883200000 implements MigrationInterface
       CREATE TYPE "vehicles_status_enum" AS ENUM('pending', 'active', 'inactive', 'inspection_failed', 'maintenance', 'rented')
     `);
     
-    // Alter the vehicles table to use the new enum
-    await queryRunner.query(`
-      ALTER TABLE "vehicles" 
-      ALTER COLUMN "status" TYPE "vehicles_status_enum" 
-      USING "status"::text::"vehicles_status_enum"
-    `);
+    // Check if status column exists and add it if it doesn't
+    const table = await queryRunner.getTable('vehicles');
+    const hasStatusColumn = table?.findColumnByName('status');
     
-    // Set default value
-    await queryRunner.query(`
-      ALTER TABLE "vehicles" 
-      ALTER COLUMN "status" SET DEFAULT 'pending'
-    `);
+    if (!hasStatusColumn) {
+      // Add the status column
+      await queryRunner.query(`
+        ALTER TABLE "vehicles" 
+        ADD COLUMN "status" "vehicles_status_enum" NOT NULL DEFAULT 'pending'
+      `);
+    } else {
+      // Alter the existing column to use the new enum
+      await queryRunner.query(`
+        ALTER TABLE "vehicles" 
+        ALTER COLUMN "status" TYPE "vehicles_status_enum" 
+        USING "status"::text::"vehicles_status_enum"
+      `);
+      
+      // Set default value
+      await queryRunner.query(`
+        ALTER TABLE "vehicles" 
+        ALTER COLUMN "status" SET DEFAULT 'pending'
+      `);
+    }
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
