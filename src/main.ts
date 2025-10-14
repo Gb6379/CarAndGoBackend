@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { DataSource } from 'typeorm';
 import { config } from 'dotenv';
+import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
 config();
 
@@ -63,6 +64,9 @@ async function bootstrap() {
     await runMigrations();
 
     const app = await NestFactory.create(AppModule);
+    
+    // Global exception filter for better error logging
+    app.useGlobalFilters(new AllExceptionsFilter());
     
     // Enable CORS for frontend applications
     app.enableCors({
