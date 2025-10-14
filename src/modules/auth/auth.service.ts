@@ -42,7 +42,26 @@ export class AuthService {
   }
 
   async register(createUserDto: any) {
-    const user = await this.userService.create(createUserDto);
+    // Map Portuguese userType values to English enum values
+    const userTypeMapping = {
+      'quero alugar carros': 'lessee',      // Locatário
+      'quero alugar meu carro': 'lessor',   // Locador
+      'ambos': 'both',                       // Ambos
+      'rent': 'lessee',                      // Alias for lessee
+      'rent_out': 'lessor',                  // Alias for lessor
+    };
+
+    // Convert userType to lowercase for case-insensitive matching
+    const userTypeLower = createUserDto.userType?.toLowerCase();
+    const mappedUserType = userTypeMapping[userTypeLower] || userTypeLower;
+    
+    // Update the DTO with the mapped userType
+    const mappedDto = {
+      ...createUserDto,
+      userType: mappedUserType,
+    };
+
+    const user = await this.userService.create(mappedDto);
     
     const payload = { 
       email: user.email, 
