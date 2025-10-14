@@ -68,17 +68,19 @@ async function bootstrap() {
     // Global exception filter for better error logging
     app.useGlobalFilters(new AllExceptionsFilter());
     
-    // Enable CORS for frontend applications
-    app.enableCors({
-      origin: [
-        'http://localhost:3001', 
-        'http://localhost:3000', 
-        'http://localhost:19006',
-        'https://carandgoapp-production.up.railway.app',
-        'https://*.up.railway.app' // Allow all Railway subdomains
-      ],
-      credentials: true,
-    });
+  // Enable CORS for frontend applications
+  app.enableCors({
+    origin: [
+      'http://localhost:3001', 
+      'http://localhost:3000', 
+      'http://localhost:19006',
+      'https://carandgoapp-production.up.railway.app',
+      'https://www.carandgo.com.br',
+      'https://carandgo.com.br',
+      'https://*.up.railway.app' // Allow all Railway subdomains
+    ],
+    credentials: true,
+  });
 
     // Global validation pipe
     app.useGlobalPipes(new ValidationPipe({
