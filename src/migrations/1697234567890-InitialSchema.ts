@@ -4,6 +4,17 @@ export class InitialSchema1697234567890 implements MigrationInterface {
   name = 'InitialSchema1697234567890';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Drop enum types if they exist (to handle re-running migrations)
+    await queryRunner.query(`DROP TYPE IF EXISTS "locator_devices_status_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "inspections_status_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "bookings_paymentstatus_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "bookings_status_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "vehicles_status_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "vehicles_fueltype_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "vehicles_type_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "users_status_enum" CASCADE`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "users_usertype_enum" CASCADE`);
+
     // Create enum types
     await queryRunner.query(`
       CREATE TYPE "users_usertype_enum" AS ENUM('CUSTOMER', 'OWNER', 'ADMIN');
