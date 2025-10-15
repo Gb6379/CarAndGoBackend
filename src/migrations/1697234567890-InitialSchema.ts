@@ -17,19 +17,19 @@ export class InitialSchema1697234567890 implements MigrationInterface {
 
     // Create enum types
     await queryRunner.query(`
-      CREATE TYPE "users_usertype_enum" AS ENUM('CUSTOMER', 'OWNER', 'ADMIN');
+      CREATE TYPE "users_usertype_enum" AS ENUM('lessor', 'lessee', 'both');
     `);
     await queryRunner.query(`
-      CREATE TYPE "users_status_enum" AS ENUM('PENDING', 'ACTIVE', 'INACTIVE', 'SUSPENDED');
+      CREATE TYPE "users_status_enum" AS ENUM('pending', 'active', 'inactive', 'suspended');
     `);
     await queryRunner.query(`
-      CREATE TYPE "vehicles_type_enum" AS ENUM('SEDAN', 'SUV', 'HATCHBACK', 'COUPE', 'CONVERTIBLE', 'PICKUP', 'VAN', 'MOTORCYCLE');
+      CREATE TYPE "vehicles_type_enum" AS ENUM('sedan', 'hatchback', 'suv', 'pickup', 'coupe', 'convertible', 'van', 'wagon', 'minivan', 'motorcycle', 'truck');
     `);
     await queryRunner.query(`
-      CREATE TYPE "vehicles_fueltype_enum" AS ENUM('GASOLINE', 'ETHANOL', 'DIESEL', 'FLEX', 'ELECTRIC', 'HYBRID');
+      CREATE TYPE "vehicles_fueltype_enum" AS ENUM('gasoline', 'ethanol', 'diesel', 'flex', 'electric', 'hybrid');
     `);
     await queryRunner.query(`
-      CREATE TYPE "vehicles_status_enum" AS ENUM('PENDING', 'ACTIVE', 'INACTIVE', 'MAINTENANCE', 'DELETED');
+      CREATE TYPE "vehicles_status_enum" AS ENUM('pending', 'active', 'inactive', 'inspection_failed', 'maintenance', 'rented');
     `);
     await queryRunner.query(`
       CREATE TYPE "bookings_status_enum" AS ENUM('PENDING', 'CONFIRMED', 'ACTIVE', 'COMPLETED', 'CANCELLED', 'REJECTED');
@@ -54,7 +54,7 @@ export class InitialSchema1697234567890 implements MigrationInterface {
         "lastName" character varying NOT NULL,
         "cpfCnpj" character varying NOT NULL,
         "userType" "users_usertype_enum" NOT NULL,
-        "status" "users_status_enum" NOT NULL DEFAULT 'PENDING',
+        "status" "users_status_enum" NOT NULL DEFAULT 'pending',
         "phone" character varying,
         "birthDate" date,
         "street" character varying,
@@ -92,7 +92,7 @@ export class InitialSchema1697234567890 implements MigrationInterface {
         "dailyRate" numeric(10,2) NOT NULL,
         "hourlyRate" numeric(10,2) NOT NULL,
         "securityDeposit" numeric(10,2),
-        "status" "vehicles_status_enum" NOT NULL DEFAULT 'PENDING',
+        "status" "vehicles_status_enum" NOT NULL DEFAULT 'pending',
         "totalBookings" integer NOT NULL DEFAULT 0,
         "rating" numeric(5,2),
         "address" character varying NOT NULL,

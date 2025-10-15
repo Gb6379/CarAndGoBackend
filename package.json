@@ -21,7 +21,10 @@
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/config/data-source.ts",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/config/data-source.ts",
-    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/config/data-source.ts"
+    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/config/data-source.ts",
+    "seed": "ts-node src/seed.ts",
+    "seed:force": "RUN_SEED=true ts-node src/seed.ts",
+    "start:with-seed": "RUN_SEED=true npm run start:prod"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

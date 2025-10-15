@@ -1,4 +1,5 @@
 import { IsEmail, IsString, IsEnum, IsOptional, IsDateString, MinLength } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { UserType } from '../enums/user-type.enum';
 
 export class CreateUserDto {
@@ -18,6 +19,18 @@ export class CreateUserDto {
   @IsString()
   cpfCnpj: string;
 
+  @Transform(({ value }) => {
+    const userTypeMapping: { [key: string]: string } = {
+      'quero alugar carros': 'lessee',
+      'quero alugar meu carro': 'lessor',
+      'ambos': 'both',
+      'rent': 'lessee',
+      'rent_out': 'lessor',
+      'host': 'lessor',
+    };
+    const userTypeLower = value?.toLowerCase();
+    return userTypeMapping[userTypeLower] || userTypeLower;
+  })
   @IsEnum(UserType)
   userType: UserType;
 
