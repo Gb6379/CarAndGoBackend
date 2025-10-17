@@ -50,4 +50,11 @@ export class UserController {
   getProfile(@Request() req) {
     return this.userService.findOne(req.user.id);
   }
+
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('profile/me')
+  updateProfile(@Request() req, @Body() updateUserDto: UpdateUserDto) {
+    return this.userService.update(req.user.id, updateUserDto);
+  }
 }
