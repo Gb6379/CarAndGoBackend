@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Vehicle } from './entities/vehicle.entity';
@@ -33,6 +33,12 @@ export class VehicleService {
   }
 
   async findOne(id: string): Promise<Vehicle> {
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(id)) {
+      throw new BadRequestException(`Invalid vehicle ID format. Expected UUID, got: ${id}`);
+    }
+
     const vehicle = await this.vehicleRepository.findOne({
       where: { id },
       relations: ['owner', 'bookings'],
