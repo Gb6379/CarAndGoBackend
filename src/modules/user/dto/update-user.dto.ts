@@ -22,4 +22,32 @@ export class UpdateUserDto extends PartialType(CreateUserDto) {
   @IsOptional()
   @IsBoolean()
   criminalBackgroundCheck?: boolean;
+
+  @IsOptional()
+  @IsString()
+  bankName?: string;
+
+  @IsOptional()
+  @IsString()
+  bankAgency?: string;
+
+  @IsOptional()
+  @IsString()
+  bankAccount?: string;
+
+  @IsOptional()
+  @IsString()
+  bankAccountType?: string;
+
+  @IsOptional()
+  @IsString()
+  bankHolderName?: string;
+
+  @IsOptional()
+  @IsString()
+  bankHolderDocument?: string;
+
+  @IsOptional()
+  @IsString()
+  pixKey?: string;
 }

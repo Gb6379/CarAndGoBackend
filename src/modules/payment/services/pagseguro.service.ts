@@ -11,6 +11,8 @@ export interface PagSeguroPaymentRequest {
   customerPhone: string;
   description: string;
   reference: string;
+  /** URL para onde o usuário será redirecionado após o pagamento (ex: frontend/payment/callback?bookingId=xxx) */
+  redirectURL?: string;
 }
 
 export interface PagSeguroPaymentResponse {
@@ -52,6 +54,7 @@ export class PagSeguroService {
     try {
       const sessionId = await this.getSessionId();
       
+      const redirectURL = paymentRequest.redirectURL || `${process.env.FRONTEND_URL || 'http://localhost:3001'}/payment/callback`;
       const paymentData = {
         currency: 'BRL',
         itemId1: paymentRequest.bookingId,
@@ -66,8 +69,8 @@ export class PagSeguroService {
         shippingType: '3', // Not specified
         shippingCost: '0.00',
         extraAmount: '0.00',
-        redirectURL: `${process.env.FRONTEND_URL}/payment/callback`,
-        notificationURL: `${process.env.API_URL}/payments/pagseguro/notification`,
+        redirectURL,
+        notificationURL: `${process.env.API_URL || process.env.BACKEND_URL || 'http://localhost:3000'}/payments/pagseguro/notification`,
         maxUses: '1',
         maxAge: '3600',
       };

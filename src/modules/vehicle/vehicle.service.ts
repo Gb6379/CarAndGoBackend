@@ -1,18 +1,29 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Vehicle } from './entities/vehicle.entity';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { UserService } from '../user/user.service';
 
 @Injectable()
 export class VehicleService {
   constructor(
     @InjectRepository(Vehicle)
     private vehicleRepository: Repository<Vehicle>,
+    private userService: UserService,
   ) {}
 
-  async create(createVehicleDto: CreateVehicleDto): Promise<Vehicle> {
+  async create(createVehicleDto: CreateVehicleDto, userId: string): Promise<Vehicle> {
+    if (createVehicleDto.ownerId !== userId) {
+      throw new ForbiddenException('Só é possível cadastrar veículos para sua própria conta.');
+    }
+    const user = await this.userService.findOne(userId);
+    if (!user.documentsVerified) {
+      throw new ForbiddenException(
+        'É necessário completar a verificação de documentos (CPF e antecedentes) para anunciar veículos. Acesse Conta > Verificação.',
+      );
+    }
     try {
       console.log('Creating vehicle with data:', createVehicleDto);
       const vehicle = this.vehicleRepository.create(createVehicleDto);
@@ -70,6 +81,8 @@ export class VehicleService {
   }
 
   async searchVehicles(filters: any): Promise<Vehicle[]> {
+    console.log('Search filters received:', JSON.stringify(filters, null, 2));
+    
     const query = this.vehicleRepository.createQueryBuilder('vehicle')
       .leftJoinAndSelect('vehicle.owner', 'owner')
       .where('vehicle.isActive = :isActive', { isActive: true })
@@ -92,10 +105,28 @@ export class VehicleService {
         );
       } else {
         // Text-based location search
-        query.andWhere(
-          '(LOWER(vehicle.city) LIKE LOWER(:location) OR LOWER(vehicle.address) LIKE LOWER(:location) OR LOWER(vehicle.state) LIKE LOWER(:location))',
-          { location: `%${location}%` }
-        );
+        // Split location by comma to handle "City, State" format
+        const locationParts = location.split(',').map((part: string) => part.trim());
+        
+        if (locationParts.length >= 2) {
+          // User provided "City, State" format - search for city AND state
+          const cityPart = locationParts[0];
+          const statePart = locationParts[1];
+          query.andWhere(
+            '(LOWER(vehicle.city) LIKE LOWER(:cityPart) OR LOWER(vehicle.address) LIKE LOWER(:cityPart))',
+            { cityPart: `%${cityPart}%` }
+          );
+          // Optionally also match state if provided
+          if (statePart.length === 2) {
+            query.andWhere('LOWER(vehicle.state) = LOWER(:statePart)', { statePart });
+          }
+        } else {
+          // Single search term - search across all location fields
+          query.andWhere(
+            '(LOWER(vehicle.city) LIKE LOWER(:location) OR LOWER(vehicle.address) LIKE LOWER(:location) OR LOWER(vehicle.state) LIKE LOWER(:location))',
+            { location: `%${location}%` }
+          );
+        }
       }
     }
 
@@ -132,7 +163,7 @@ export class VehicleService {
 
     // Electric vehicles filter
     if (filters.electric === 'true') {
-      query.andWhere('vehicle.fuelType = :fuelType', { fuelType: 'ELECTRIC' });
+      query.andWhere('vehicle.fuelType = :fuelType', { fuelType: 'eletrico' });
     }
 
     // Rating filter
@@ -141,15 +172,30 @@ export class VehicleService {
     }
 
     // Date availability filter (check if vehicle is available during the requested period)
+    // Only blocks if there's a booking that is pending, confirmed, or active
+    // Completed, cancelled, rejected, and expired bookings don't block availability
     if (filters.fromDate && filters.untilDate) {
+      console.log('Filtering by date availability:', filters.fromDate, 'to', filters.untilDate);
+      
+      // First, log existing bookings for debugging
+      const existingBookings = await this.vehicleRepository.query(
+        `SELECT id, "vehicleId", DATE("startDate") as start_date, DATE("endDate") as end_date, CAST(status AS TEXT) as status 
+         FROM bookings 
+         WHERE DATE("startDate") <= $1 AND DATE("endDate") >= $2`,
+        [filters.untilDate, filters.fromDate]
+      );
+      console.log('Existing bookings that overlap with search period:', existingBookings);
+      
+      // Use DATE() function to compare only the date part, ignoring time
+      // Use LOWER() for case-insensitive status comparison
+      // Include awaiting_return as it still blocks the vehicle
       query.andWhere(
-        `vehicle.id NOT IN (
-          SELECT DISTINCT b.vehicleId 
-          FROM bookings b 
-          WHERE b.status IN ('CONFIRMED', 'ACTIVE')
-          AND (
-            (b.startDate <= :untilDate AND b.endDate >= :fromDate)
-          )
+        `NOT EXISTS (
+          SELECT 1 FROM bookings b 
+          WHERE b."vehicleId" = vehicle.id 
+          AND DATE(b."startDate") <= DATE(:untilDate)
+          AND DATE(b."endDate") >= DATE(:fromDate)
+          AND LOWER(CAST(b.status AS TEXT)) IN ('pending', 'confirmed', 'active', 'awaiting_return')
         )`,
         { fromDate: filters.fromDate, untilDate: filters.untilDate }
       );

@@ -79,9 +79,37 @@ export class User extends BaseEntity {
   @Column({ default: false })
   criminalBackgroundCheck: boolean;
 
-  // Profile Photo
+  // Profile Photo (profilePhoto = 'inline' when stored in DB)
   @Column({ nullable: true })
   profilePhoto: string;
+
+  @Column({ type: 'bytea', nullable: true, select: false })
+  profilePhotoData: Buffer;
+
+  @Column({ nullable: true, length: 30, select: false })
+  profilePhotoMimeType: string;
+
+  // Bank details for lessors (receiving payments)
+  @Column({ nullable: true })
+  bankName: string;
+
+  @Column({ nullable: true })
+  bankAgency: string;
+
+  @Column({ nullable: true })
+  bankAccount: string;
+
+  @Column({ nullable: true })
+  bankAccountType: string; // 'checking' | 'savings'
+
+  @Column({ nullable: true })
+  bankHolderName: string;
+
+  @Column({ nullable: true })
+  bankHolderDocument: string; // CPF or CNPJ
+
+  @Column({ nullable: true })
+  pixKey: string;
 
   @CreateDateColumn()
   createdAt: Date;

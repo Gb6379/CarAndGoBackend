@@ -135,7 +135,7 @@ async function bootstrap() {
     }
 
     const app = await NestFactory.create(AppModule);
-    
+
     // Global exception filter for better error logging
     app.useGlobalFilters(new AllExceptionsFilter());
     

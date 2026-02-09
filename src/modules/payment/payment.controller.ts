@@ -12,6 +12,24 @@ export class PaymentController {
     return this.paymentService.createPayment(body.bookingId, req.user.id);
   }
 
+  @Post('pay')
+  @UseGuards(JwtAuthGuard)
+  async payWithMethod(
+    @Body() body: {
+      bookingId: string;
+      method: 'credit_card' | 'pix';
+      cardData?: { number: string; name: string; expiry: string; cvv: string };
+    },
+    @Req() req: any,
+  ) {
+    return this.paymentService.payWithMethod(
+      body.bookingId,
+      req.user.id,
+      body.method,
+      body.cardData,
+    );
+  }
+
   @Post('process')
   @UseGuards(JwtAuthGuard)
   async processPayment(@Body() body: { paymentId: string }) {

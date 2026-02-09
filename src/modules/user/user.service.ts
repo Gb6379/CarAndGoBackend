@@ -67,9 +67,22 @@ export class UserService {
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
     const user = await this.findOne(id);
-    
+
+    if (updateUserDto.cpfCnpj !== undefined) {
+      const cpfCnpjNormalized = (updateUserDto.cpfCnpj || '').replace(/\D/g, '');
+      if (cpfCnpjNormalized.length > 0) {
+        const existing = await this.userRepository.findOne({
+          where: { cpfCnpj: cpfCnpjNormalized },
+        });
+        if (existing && existing.id !== id) {
+          throw new ConflictException('Este CPF/CNPJ já está cadastrado para outra conta.');
+        }
+        (updateUserDto as any).cpfCnpj = cpfCnpjNormalized;
+      }
+    }
+
     Object.assign(user, updateUserDto);
-    
+
     return this.userRepository.save(user);
   }
 
@@ -93,5 +106,22 @@ export class UserService {
     const user = await this.findOne(id);
     user.status = status as any;
     return this.userRepository.save(user);
+  }
+
+  async updateProfilePhoto(userId: string, data: Buffer, mimeType: string): Promise<User> {
+    const user = await this.findOne(userId);
+    user.profilePhoto = 'inline';
+    user.profilePhotoData = data;
+    user.profilePhotoMimeType = mimeType;
+    return this.userRepository.save(user);
+  }
+
+  async getProfilePhoto(userId: string): Promise<{ data: Buffer; mimeType: string } | null> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['profilePhotoData', 'profilePhotoMimeType'],
+    });
+    if (!user?.profilePhotoData) return null;
+    return { data: user.profilePhotoData, mimeType: user.profilePhotoMimeType || 'image/jpeg' };
   }
 }

@@ -1,10 +1,14 @@
-import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, UseGuards, Req } from '@nestjs/common';
 import { GovBrService } from './services/gov-br.service';
+import { UserService } from '../user/user.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('gov-br')
 export class GovBrController {
-  constructor(private readonly govBrService: GovBrService) {}
+  constructor(
+    private readonly govBrService: GovBrService,
+    private readonly userService: UserService,
+  ) {}
 
   @Get('auth-url')
   @UseGuards(JwtAuthGuard)
@@ -37,15 +41,37 @@ export class GovBrController {
 
   @Post('validate-document')
   @UseGuards(JwtAuthGuard)
-  async validateDocument(@Body() body: { document: string; type: 'CPF' | 'CNPJ' }) {
+  async validateDocument(@Body() body: { document: string; type: 'CPF' | 'CNPJ' }, @Req() req: any) {
     try {
       const result = body.type === 'CPF' 
         ? await this.govBrService.validateCPF(body.document)
         : await this.govBrService.validateCNPJ(body.document);
       
+      if (!result.isValid || result.isBlacklisted) {
+        return {
+          success: false,
+          result,
+          error: result.errors?.join(', ') || 'Documento inválido ou irregular.',
+        };
+      }
+
+      // Para CPF: consultar antecedentes criminais; só marcar verificado se aprovado
+      if (body.type === 'CPF') {
+        const antecedentes = await this.govBrService.checkCriminalBackground(body.document);
+        if (!antecedentes.isApproved) {
+          return {
+            success: false,
+            result: { ...result, antecedentes },
+            error: 'Não é possível concluir a verificação devido a restrições nos antecedentes. Entre em contato com o suporte.',
+          };
+        }
+      }
+
+      await this.userService.update(req.user.id, { documentsVerified: true });
+      
       return {
         success: true,
-        result,
+        result: { ...result, documentsVerified: true },
       };
     } catch (error) {
       return {

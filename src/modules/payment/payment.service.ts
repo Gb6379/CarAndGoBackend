@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PagSeguroService } from './services/pagseguro.service';
 import { Booking } from '../booking/entities/booking.entity';
+import { BookingStatus } from '../booking/enums/booking-status.enum';
 import { User } from '../user/entities/user.entity';
 
 @Injectable()
@@ -33,16 +34,17 @@ export class PaymentService {
       throw new NotFoundException('User not found');
     }
 
-    // Create PagSeguro payment
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3001';
     const paymentRequest = {
       bookingId: booking.id,
       amount: booking.totalAmount,
       customerEmail: user.email,
       customerName: `${user.firstName} ${user.lastName}`,
-      customerDocument: user.cpfCnpj,
+      customerDocument: user.cpfCnpj || '',
       customerPhone: user.phone || '11999999999',
-      description: `Car rental - ${booking.vehicle.make} ${booking.vehicle.model}`,
+      description: `Locação - ${booking.vehicle?.make || ''} ${booking.vehicle?.model || ''}`,
       reference: `BOOKING_${booking.id}`,
+      redirectURL: `${frontendUrl}/payment/callback?bookingId=${booking.id}`,
     };
 
     const paymentResponse = await this.pagSeguroService.createPayment(paymentRequest);
@@ -154,16 +156,85 @@ export class PaymentService {
   }
 
   async getPaymentStatus(paymentId: string) {
-    const transaction = await this.pagSeguroService.getTransactionStatus(paymentId);
+    try {
+      const transaction = await this.pagSeguroService.getTransactionStatus(paymentId);
+      return {
+        paymentId,
+        status: this.pagSeguroService.getPaymentStatusDescription(transaction.status),
+        amount: transaction.amount,
+        netAmount: transaction.netAmount,
+        feeAmount: transaction.feeAmount,
+        paymentMethod: transaction.paymentMethod,
+        createdAt: transaction.createdAt,
+        updatedAt: transaction.updatedAt,
+      };
+    } catch {
+      return { paymentId, status: 'unknown', amount: 0 };
+    }
+  }
+
+  /** Verifica se PagSeguro está configurado para uso real */
+  private isPagSeguroConfigured(): boolean {
+    const email = this.configService.get<string>('PAGSEGURO_EMAIL');
+    const token = this.configService.get<string>('PAGSEGURO_TOKEN');
+    return !!email && !!token;
+  }
+
+  /**
+   * Process payment by method (credit_card or pix).
+   * - Cartão: se PagSeguro estiver configurado, retorna paymentUrl para redirecionar; senão simula (dev).
+   * - PIX: por enquanto simulado; para produção pode usar PagSeguro PIX ou outro gateway.
+   */
+  async payWithMethod(
+    bookingId: string,
+    userId: string,
+    method: 'credit_card' | 'pix',
+    cardData?: { number: string; name: string; expiry: string; cvv: string },
+  ) {
+    const booking = await this.bookingRepository.findOne({
+      where: { id: bookingId },
+      relations: ['lessee', 'lessor', 'vehicle'],
+    });
+
+    if (!booking) {
+      throw new NotFoundException('Reserva não encontrada');
+    }
+
+    if (booking.lesseeId !== userId) {
+      throw new NotFoundException('Esta reserva não pertence a você');
+    }
+
+    const totalAmount = Number(booking.totalAmount);
+
+    // Cartão de crédito: usar PagSeguro (checkout real) se configurado
+    if (method === 'credit_card' && this.isPagSeguroConfigured()) {
+      const result = await this.createPayment(bookingId, userId);
+      return {
+        success: true,
+        paymentUrl: result.paymentUrl,
+        bookingId: result.bookingId,
+        amount: result.amount,
+        method: 'credit_card',
+        message: 'Redirecionando para o PagSeguro para concluir o pagamento.',
+      };
+    }
+
+    // PIX ou cartão sem PagSeguro: modo simulado (desenvolvimento)
+    const paymentId = `pay_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    booking.paymentTransactionId = paymentId;
+    booking.paymentStatus = 'paid' as any;
+    booking.paymentMethod = method;
+    booking.paymentDate = new Date();
+    booking.status = BookingStatus.CONFIRMED;
+    await this.bookingRepository.save(booking);
+
     return {
+      success: true,
       paymentId,
-      status: this.pagSeguroService.getPaymentStatusDescription(transaction.status),
-      amount: transaction.amount,
-      netAmount: transaction.netAmount,
-      feeAmount: transaction.feeAmount,
-      paymentMethod: transaction.paymentMethod,
-      createdAt: transaction.createdAt,
-      updatedAt: transaction.updatedAt,
+      bookingId: booking.id,
+      amount: totalAmount,
+      method,
+      message: method === 'pix' ? 'Pagamento PIX confirmado.' : 'Pagamento com cartão aprovado (simulado).',
     };
   }
 }

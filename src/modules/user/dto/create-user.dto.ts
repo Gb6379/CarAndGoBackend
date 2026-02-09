@@ -1,6 +1,7 @@
-import { IsEmail, IsString, IsEnum, IsOptional, IsDateString, MinLength } from 'class-validator';
+import { IsEmail, IsString, IsEnum, IsOptional, IsDateString, MinLength, Validate } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { UserType } from '../enums/user-type.enum';
+import { IsCpfCnpjValidator } from '../validators/cpf-cnpj.validator';
 
 export class CreateUserDto {
   @IsEmail()
@@ -17,6 +18,7 @@ export class CreateUserDto {
   lastName: string;
 
   @IsString()
+  @Validate(IsCpfCnpjValidator, { message: 'CPF ou CNPJ inválido.' })
   cpfCnpj: string;
 
   @Transform(({ value }) => {
@@ -34,9 +36,8 @@ export class CreateUserDto {
   @IsEnum(UserType)
   userType: UserType;
 
-  @IsOptional()
   @IsString()
-  phone?: string;
+  phone: string;
 
   @IsOptional()
   @IsDateString()

@@ -29,6 +29,7 @@ npm run migration:revert
 ## Migration Files
 
 - **1697234567890-InitialSchema.ts**: Initial database schema with all tables (user, vehicle, booking, locator_device, inspection)
+- **1738454400000-FavoritesAndReviews.ts**: Favoritos por usuário e avaliações (reviews) de veículos
 
 ## Important Notes
 

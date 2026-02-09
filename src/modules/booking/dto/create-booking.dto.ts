@@ -23,11 +23,13 @@ export class CreateBookingDto {
   @IsNumber()
   hourlyRate: number;
 
+  @IsOptional()
   @IsNumber()
-  totalAmount: number;
+  totalAmount?: number; // Calculated by backend if not provided
 
+  @IsOptional()
   @IsNumber()
-  securityDeposit: number;
+  securityDeposit?: number;
 
   @IsOptional()
   @IsString()

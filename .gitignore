@@ -19,6 +19,7 @@ build/
 backend/.env
 backend/config.env
 backend/dist/
+uploads/
 
 # Frontend specific
 web-app/dist/

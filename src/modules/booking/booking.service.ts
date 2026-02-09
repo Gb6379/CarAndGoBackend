@@ -38,13 +38,16 @@ export class BookingService {
       throw new BadRequestException('Vehicle is not available for the selected dates');
     }
 
+    // Calculate security deposit if not provided (default: 2x daily rate)
+    const securityDeposit = createBookingDto.securityDeposit || (createBookingDto.dailyRate * 2);
+
     // Calculate booking costs
     const calculation = this.bookingCalculationService.calculateBookingCost({
       startDate,
       endDate,
       dailyRate: createBookingDto.dailyRate,
       hourlyRate: createBookingDto.hourlyRate,
-      securityDeposit: createBookingDto.securityDeposit,
+      securityDeposit,
     });
 
     // Plan route if coordinates are provided
@@ -72,7 +75,7 @@ export class BookingService {
         endDate,
         dailyRate: createBookingDto.dailyRate,
         hourlyRate: createBookingDto.hourlyRate,
-        securityDeposit: createBookingDto.securityDeposit,
+        securityDeposit,
         distance: route.distance,
       });
 
@@ -86,6 +89,7 @@ export class BookingService {
       totalAmount: calculation.totalAmount,
       platformFee: calculation.platformFee,
       lessorAmount: calculation.lessorAmount,
+      securityDeposit,
       plannedDistance: routeData?.distance || 0,
       scheduledRoute: routeData ? JSON.stringify(routeData.routePoints) : null,
     });
@@ -145,24 +149,50 @@ export class BookingService {
   }
 
   async checkVehicleAvailability(vehicleId: string, startDate: Date, endDate: Date): Promise<boolean> {
-    const conflictingBookings = await this.bookingRepository.find({
-      where: {
-        vehicleId,
-        status: BookingStatus.CONFIRMED,
-        startDate: Between(startDate, endDate),
-      },
-    });
+    try {
+      // Check for any overlapping bookings that would block this period
+      // Using raw SQL to avoid enum issues
+      // Statuses that block: pending, confirmed, active, awaiting_return
+      const overlappingBookings = await this.bookingRepository.query(
+        `SELECT id FROM bookings 
+         WHERE "vehicleId" = $1 
+         AND "startDate" <= $2 
+         AND "endDate" >= $3
+         AND LOWER(CAST(status AS TEXT)) IN ('pending', 'confirmed', 'active', 'awaiting_return')`,
+        [vehicleId, endDate, startDate]
+      );
 
-    // Also check for bookings that start before but end during the requested period
-    const overlappingBookings = await this.bookingRepository.find({
-      where: {
-        vehicleId,
-        status: BookingStatus.CONFIRMED,
-        endDate: Between(startDate, endDate),
-      },
-    });
+      return overlappingBookings.length === 0;
+    } catch (error) {
+      // If there's an error (e.g., no bookings table data yet), assume available
+      console.error('Error checking availability:', error);
+      return true;
+    }
+  }
 
-    return conflictingBookings.length === 0 && overlappingBookings.length === 0;
+  async getVehicleBlockedDates(vehicleId: string): Promise<{ startDate: Date; endDate: Date; status: string }[]> {
+    try {
+      // Get all bookings that block dates using raw SQL to avoid enum issues
+      // Statuses that block: pending, confirmed, active, awaiting_return
+      const bookings = await this.bookingRepository.query(
+        `SELECT "startDate", "endDate", CAST(status AS TEXT) as status 
+         FROM bookings 
+         WHERE "vehicleId" = $1 
+         AND LOWER(CAST(status AS TEXT)) IN ('pending', 'confirmed', 'active', 'awaiting_return')
+         ORDER BY "startDate" ASC`,
+        [vehicleId]
+      );
+
+      return bookings.map((booking: any) => ({
+        startDate: booking.startDate,
+        endDate: booking.endDate,
+        status: booking.status,
+      }));
+    } catch (error) {
+      // If there's an error, return empty array
+      console.error('Error getting blocked dates:', error);
+      return [];
+    }
   }
 
   async confirmBooking(id: string): Promise<Booking> {
@@ -196,6 +226,99 @@ export class BookingService {
     return this.bookingRepository.save(booking);
   }
 
+  async rejectBooking(id: string, reason?: string): Promise<Booking> {
+    const booking = await this.findOne(id);
+    const status = String(booking.status).toLowerCase();
+    if (status !== 'pending') {
+      throw new BadRequestException('Only pending bookings can be rejected');
+    }
+    booking.status = BookingStatus.REJECTED;
+    if (reason) {
+      booking.returnNotes = reason;
+    }
+    return this.bookingRepository.save(booking);
+  }
+
+  async confirmReturn(id: string, notes?: string): Promise<Booking> {
+    const booking = await this.findOne(id);
+    const status = String(booking.status).toLowerCase();
+    if (status !== 'awaiting_return' && status !== 'active') {
+      throw new BadRequestException('Only active or awaiting return bookings can be marked as completed');
+    }
+    booking.status = BookingStatus.COMPLETED;
+    booking.returnCompleted = true;
+    booking.returnTime = new Date();
+    if (notes) {
+      booking.returnNotes = notes;
+    }
+    return this.bookingRepository.save(booking);
+  }
+
+  // Check for bookings that have reached their end date and update status
+  async checkAndUpdateAwaitingReturn(): Promise<number> {
+    try {
+      const now = new Date();
+      
+      // Find all ACTIVE or CONFIRMED bookings where endDate has passed using raw SQL
+      const bookingsToUpdate = await this.bookingRepository.query(
+        `SELECT id FROM bookings 
+         WHERE LOWER(CAST(status AS TEXT)) IN ('active', 'confirmed')
+         AND "endDate" <= $1`,
+        [now]
+      );
+      
+      let updatedCount = 0;
+      for (const row of bookingsToUpdate) {
+        // Update status to awaiting_return
+        await this.bookingRepository.query(
+          `UPDATE bookings SET status = 'AWAITING_RETURN' WHERE id = $1`,
+          [row.id]
+        );
+        updatedCount++;
+      }
+      
+      console.log(`Updated ${updatedCount} bookings to AWAITING_RETURN status`);
+      return updatedCount;
+    } catch (error) {
+      console.error('Error in checkAndUpdateAwaitingReturn:', error);
+      return 0;
+    }
+  }
+
+  // Get pending bookings for a lessor (vehicle owner)
+  async getPendingBookingsForLessor(lessorId: string): Promise<Booking[]> {
+    try {
+      return await this.bookingRepository
+        .createQueryBuilder('booking')
+        .leftJoinAndSelect('booking.lessee', 'lessee')
+        .leftJoinAndSelect('booking.vehicle', 'vehicle')
+        .where('booking.lessorId = :lessorId', { lessorId })
+        .andWhere('LOWER(CAST(booking.status AS TEXT)) = :status', { status: 'pending' })
+        .orderBy('booking.createdAt', 'DESC')
+        .getMany();
+    } catch (error) {
+      console.error('Error getting pending bookings:', error);
+      return [];
+    }
+  }
+
+  // Get bookings awaiting return confirmation for a lessor
+  async getAwaitingReturnForLessor(lessorId: string): Promise<Booking[]> {
+    try {
+      return await this.bookingRepository
+        .createQueryBuilder('booking')
+        .leftJoinAndSelect('booking.lessee', 'lessee')
+        .leftJoinAndSelect('booking.vehicle', 'vehicle')
+        .where('booking.lessorId = :lessorId', { lessorId })
+        .andWhere('LOWER(CAST(booking.status AS TEXT)) = :status', { status: 'awaiting_return' })
+        .orderBy('booking.endDate', 'ASC')
+        .getMany();
+    } catch (error) {
+      console.error('Error getting awaiting return bookings:', error);
+      return [];
+    }
+  }
+
   async processEarlyReturn(id: string, earlyReturnDate: Date): Promise<Booking> {
     const booking = await this.findOne(id);
     
@@ -224,25 +347,28 @@ export class BookingService {
     cancelledBookings: number;
     totalRevenue: number;
   }> {
-    const [total, active, completed, cancelled] = await Promise.all([
-      this.bookingRepository.count(),
-      this.bookingRepository.count({ where: { status: BookingStatus.ACTIVE } }),
-      this.bookingRepository.count({ where: { status: BookingStatus.COMPLETED } }),
-      this.bookingRepository.count({ where: { status: BookingStatus.CANCELLED } }),
+    const [totalResult, activeResult, completedResult, cancelledResult] = await Promise.all([
+      this.bookingRepository.query('SELECT COUNT(*) as count FROM bookings'),
+      this.bookingRepository.query(`SELECT COUNT(*) as count FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'active'`),
+      this.bookingRepository.query(`SELECT COUNT(*) as count FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'completed'`),
+      this.bookingRepository.query(`SELECT COUNT(*) as count FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'cancelled'`),
     ]);
 
-    const revenueResult = await this.bookingRepository
-      .createQueryBuilder('booking')
-      .select('SUM(booking.totalAmount)', 'totalRevenue')
-      .where('booking.status = :status', { status: BookingStatus.COMPLETED })
-      .getRawOne();
+    const total = parseInt(totalResult[0]?.count) || 0;
+    const active = parseInt(activeResult[0]?.count) || 0;
+    const completed = parseInt(completedResult[0]?.count) || 0;
+    const cancelled = parseInt(cancelledResult[0]?.count) || 0;
+
+    const revenueResult = await this.bookingRepository.query(
+      `SELECT SUM("totalAmount") as "totalRevenue" FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'completed'`
+    );
 
     return {
       totalBookings: total,
       activeBookings: active,
       completedBookings: completed,
       cancelledBookings: cancelled,
-      totalRevenue: parseFloat(revenueResult.totalRevenue) || 0,
+      totalRevenue: parseFloat(revenueResult[0]?.totalRevenue) || 0,
     };
   }
 }

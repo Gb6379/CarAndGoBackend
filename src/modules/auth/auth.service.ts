@@ -37,6 +37,7 @@ export class AuthService {
         lastName: user.lastName,
         userType: user.userType,
         status: user.status,
+        documentsVerified: user.documentsVerified ?? false,
       },
     };
   }
@@ -60,6 +61,7 @@ export class AuthService {
         lastName: user.lastName,
         userType: user.userType,
         status: user.status,
+        documentsVerified: user.documentsVerified ?? false,
       },
     };
   }

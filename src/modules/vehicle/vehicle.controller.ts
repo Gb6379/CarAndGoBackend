@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query, Req } from '@nestjs/common';
 import { VehicleService } from './vehicle.service';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
@@ -10,9 +10,9 @@ export class VehicleController {
 
   @Post()
   @UseGuards(JwtAuthGuard)
-  create(@Body() createVehicleDto: CreateVehicleDto) {
+  create(@Body() createVehicleDto: CreateVehicleDto, @Req() req: any) {
     console.log('Received vehicle data:', createVehicleDto);
-    return this.vehicleService.create(createVehicleDto);
+    return this.vehicleService.create(createVehicleDto, req.user.id);
   }
 
   @Get()

@@ -188,15 +188,10 @@ export class RoutePlanningService {
       minivan: 11,
     };
 
-    // Fuel prices (R$/liter)
+    // Fuel prices (R$/liter ou R$/kWh para elétrico)
     const fuelPrices: { [key: string]: number } = {
-      gasoline: 5.50,
-      ethanol: 4.20,
-      flex: 4.85,
-      diesel: 4.80,
-      electric: 0.50, // per kWh
-      hybrid: 4.50,
-      cng: 3.20,
+      combustao: 5.50,
+      eletrico: 0.50, // per kWh
     };
 
     const efficiency = fuelEfficiency[vehicleType.toLowerCase()] || 12;

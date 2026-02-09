@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseConfig } from './config/database.config';
@@ -12,6 +13,8 @@ import { PaymentModule } from './modules/payment/payment.module';
 import { InspectionModule } from './modules/inspection/inspection.module';
 import { LocatorModule } from './modules/locator/locator.module';
 import { GovBrModule } from './modules/gov-br/gov-br.module';
+import { FavoriteModule } from './modules/favorite/favorite.module';
+import { ReviewModule } from './modules/review/review.module';
 
 @Module({
   imports: [
@@ -22,6 +25,7 @@ import { GovBrModule } from './modules/gov-br/gov-br.module';
     TypeOrmModule.forRootAsync({
       useClass: DatabaseConfig,
     }),
+    ScheduleModule.forRoot(),
     AuthModule,
     UserModule,
     VehicleModule,
@@ -30,6 +34,8 @@ import { GovBrModule } from './modules/gov-br/gov-br.module';
     InspectionModule,
     LocatorModule,
     GovBrModule,
+    FavoriteModule,
+    ReviewModule,
   ],
   controllers: [AppController],
   providers: [AppService],
