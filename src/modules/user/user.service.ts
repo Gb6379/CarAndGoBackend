@@ -98,8 +98,22 @@ export class UserService {
   async findByUserType(userType: UserType): Promise<User[]> {
     return this.userRepository.find({
       where: { userType },
-      select: ['id', 'email', 'firstName', 'lastName', 'userType', 'status'],
+      select: ['id', 'email', 'firstName', 'lastName', 'userType', 'status', 'createdAt'],
     });
+  }
+
+  async getStats(): Promise<{ totalUsers: number; lessors: number; lessees: number }> {
+    const [total, lessors, lessees] = await Promise.all([
+      this.userRepository.count(),
+      this.userRepository.count({ where: { userType: UserType.LESSOR } }),
+      this.userRepository.count({ where: { userType: UserType.LESSEE } }),
+    ]);
+    const both = await this.userRepository.count({ where: { userType: UserType.BOTH } });
+    return {
+      totalUsers: total,
+      lessors: lessors + both,
+      lessees: lessees + both,
+    };
   }
 
   async updateStatus(id: string, status: string): Promise<User> {
@@ -123,5 +137,41 @@ export class UserService {
     });
     if (!user?.profilePhotoData) return null;
     return { data: user.profilePhotoData, mimeType: user.profilePhotoMimeType || 'image/jpeg' };
+  }
+
+  async updateCnhDocument(userId: string, data: Buffer, mimeType: string): Promise<void> {
+    const user = await this.findOne(userId);
+    user.cnhDocumentData = data;
+    user.cnhDocumentMimeType = mimeType;
+    await this.userRepository.save(user);
+  }
+
+  async updateCacDocument(userId: string, data: Buffer, mimeType: string): Promise<void> {
+    const user = await this.findOne(userId);
+    user.cacDocumentData = data;
+    user.cacDocumentMimeType = mimeType;
+    await this.userRepository.save(user);
+  }
+
+  async getCnhDocument(userId: string): Promise<{ data: Buffer; mimeType: string } | null> {
+    const row = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.cnhDocumentData', 'data')
+      .addSelect('user.cnhDocumentMimeType', 'mimeType')
+      .where('user.id = :id', { id: userId })
+      .getRawOne<{ data: Buffer; mimeType: string }>();
+    if (!row?.data) return null;
+    return { data: row.data, mimeType: row.mimeType || 'application/octet-stream' };
+  }
+
+  async getCacDocument(userId: string): Promise<{ data: Buffer; mimeType: string } | null> {
+    const row = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.cacDocumentData', 'data')
+      .addSelect('user.cacDocumentMimeType', 'mimeType')
+      .where('user.id = :id', { id: userId })
+      .getRawOne<{ data: Buffer; mimeType: string }>();
+    if (!row?.data) return null;
+    return { data: row.data, mimeType: row.mimeType || 'application/octet-stream' };
   }
 }

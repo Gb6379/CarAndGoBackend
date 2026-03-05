@@ -48,9 +48,10 @@ npm run start:with-seed
 
 ## What Gets Seeded
 
-- **2 Test Users**:
+- **3 Test Users**:
   - Lessor: `owner@test.com` / `password123`
   - Lessee: `customer@test.com` / `password123`
+  - Admin: `admin@cargo.com` / `password123` (acesso ao painel admin; defina `ADMIN_EMAIL=admin@cargo.com` no `.env` ou `config.env`)
 
 - **5 Test Vehicles** in São Paulo:
   - Toyota Corolla 2022 - R$150/day

@@ -15,6 +15,7 @@ import { LocatorModule } from './modules/locator/locator.module';
 import { GovBrModule } from './modules/gov-br/gov-br.module';
 import { FavoriteModule } from './modules/favorite/favorite.module';
 import { ReviewModule } from './modules/review/review.module';
+import { AdminModule } from './modules/admin/admin.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { ReviewModule } from './modules/review/review.module';
     GovBrModule,
     FavoriteModule,
     ReviewModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

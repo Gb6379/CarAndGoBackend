@@ -342,19 +342,22 @@ export class BookingService {
 
   async getBookingStats(): Promise<{
     totalBookings: number;
+    pendingBookings: number;
     activeBookings: number;
     completedBookings: number;
     cancelledBookings: number;
     totalRevenue: number;
   }> {
-    const [totalResult, activeResult, completedResult, cancelledResult] = await Promise.all([
+    const [totalResult, pendingResult, activeResult, completedResult, cancelledResult] = await Promise.all([
       this.bookingRepository.query('SELECT COUNT(*) as count FROM bookings'),
+      this.bookingRepository.query(`SELECT COUNT(*) as count FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'pending'`),
       this.bookingRepository.query(`SELECT COUNT(*) as count FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'active'`),
       this.bookingRepository.query(`SELECT COUNT(*) as count FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'completed'`),
       this.bookingRepository.query(`SELECT COUNT(*) as count FROM bookings WHERE LOWER(CAST(status AS TEXT)) = 'cancelled'`),
     ]);
 
     const total = parseInt(totalResult[0]?.count) || 0;
+    const pending = parseInt(pendingResult[0]?.count) || 0;
     const active = parseInt(activeResult[0]?.count) || 0;
     const completed = parseInt(completedResult[0]?.count) || 0;
     const cancelled = parseInt(cancelledResult[0]?.count) || 0;
@@ -365,6 +368,7 @@ export class BookingService {
 
     return {
       totalBookings: total,
+      pendingBookings: pending,
       activeBookings: active,
       completedBookings: completed,
       cancelledBookings: cancelled,

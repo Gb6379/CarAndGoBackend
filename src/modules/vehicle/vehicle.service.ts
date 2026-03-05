@@ -130,9 +130,13 @@ export class VehicleService {
       }
     }
 
-    // Vehicle type filter
+    // Vehicle type / fuel type filter (eletrico | combustao)
     if (filters.vehicleType && filters.vehicleType !== 'all') {
-      query.andWhere('vehicle.type = :type', { type: filters.vehicleType });
+      if (filters.vehicleType === 'eletrico' || filters.vehicleType === 'combustao') {
+        query.andWhere('vehicle.fuelType = :fuelType', { fuelType: filters.vehicleType });
+      } else {
+        query.andWhere('vehicle.type = :type', { type: filters.vehicleType });
+      }
     }
 
     // Price range filter

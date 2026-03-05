@@ -28,6 +28,8 @@ interface UploadedPhotoFile {
   originalname: string;
 }
 
+const ALLOWED_VERIFICATION_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+
 @Controller('users')
 export class UserController {
   constructor(private readonly userService: UserService) {}
@@ -76,8 +78,37 @@ export class UserController {
       throw new NotFoundException('Foto de perfil não encontrada.');
     }
     res.setHeader('Content-Type', photo.mimeType);
-    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
     res.send(photo.data);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('profile/me/verification/cnh')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadCnhDocument(@Request() req, @UploadedFile() file: UploadedPhotoFile) {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('Nenhum arquivo enviado.');
+    }
+    if (!ALLOWED_VERIFICATION_MIMES.includes(file.mimetype)) {
+      throw new BadRequestException('Formato inválido. Use foto (JPEG, PNG, WebP) ou PDF.');
+    }
+    await this.userService.updateCnhDocument(req.user.id, file.buffer, file.mimetype);
+    return { message: 'CNH enviada com sucesso.' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('profile/me/verification/cac')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadCacDocument(@Request() req, @UploadedFile() file: UploadedPhotoFile) {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('Nenhum arquivo enviado.');
+    }
+    if (!ALLOWED_VERIFICATION_MIMES.includes(file.mimetype)) {
+      throw new BadRequestException('Formato inválido. Use foto (JPEG, PNG, WebP) ou PDF.');
+    }
+    await this.userService.updateCacDocument(req.user.id, file.buffer, file.mimetype);
+    return { message: 'CAC enviada com sucesso.' };
   }
 
   @Get(':id')

@@ -89,6 +89,19 @@ export class User extends BaseEntity {
   @Column({ nullable: true, length: 30, select: false })
   profilePhotoMimeType: string;
 
+  // Verification documents (CNH + CAC)
+  @Column({ type: 'bytea', nullable: true, select: false })
+  cnhDocumentData: Buffer;
+
+  @Column({ nullable: true, length: 100, select: false })
+  cnhDocumentMimeType: string;
+
+  @Column({ type: 'bytea', nullable: true, select: false })
+  cacDocumentData: Buffer;
+
+  @Column({ nullable: true, length: 100, select: false })
+  cacDocumentMimeType: string;
+
   // Bank details for lessors (receiving payments)
   @Column({ nullable: true })
   bankName: string;

@@ -21,11 +21,15 @@ export class AuthService {
   }
 
   async login(user: any) {
-    const payload = { 
-      email: user.email, 
-      sub: user.id, 
-      userType: user.userType,
-      status: user.status 
+    const adminEmails = (process.env.ADMIN_EMAIL || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
+    const isAdmin = adminEmails.includes(user.email?.toLowerCase());
+    const userType = isAdmin ? 'admin' : user.userType;
+
+    const payload = {
+      email: user.email,
+      sub: user.id,
+      userType,
+      status: user.status,
     };
 
     return {
@@ -35,9 +39,10 @@ export class AuthService {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
-        userType: user.userType,
+        userType,
         status: user.status,
         documentsVerified: user.documentsVerified ?? false,
+        profilePhoto: user.profilePhoto ?? undefined,
       },
     };
   }
@@ -62,6 +67,7 @@ export class AuthService {
         userType: user.userType,
         status: user.status,
         documentsVerified: user.documentsVerified ?? false,
+        profilePhoto: user.profilePhoto ?? undefined,
       },
     };
   }
