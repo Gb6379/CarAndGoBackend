@@ -4,6 +4,22 @@ import * as bcrypt from 'bcryptjs';
 
 config();
 
+/** Garante que o usuário admin existe (para produção quando o seed completo é pulado). */
+export async function ensureAdminUser(ds: DataSource, hashedPassword?: string): Promise<void> {
+  const hash = hashedPassword || await bcrypt.hash('password123', 10);
+  await ds.query(`
+    INSERT INTO users (
+      "email", "password", "firstName", "lastName", "cpfCnpj",
+      "userType", "status", "phone", "city", "state"
+    ) VALUES (
+      'admin@cargo.com', $1, 'Admin', 'Sistema', '11122233344',
+      'both', 'active', '11000000000', 'São Paulo', 'SP'
+    )
+    ON CONFLICT (email) DO NOTHING
+  `, [hash]);
+  console.log('   - Admin: admin@cargo.com (defina ADMIN_EMAIL=admin@cargo.com no .env)');
+}
+
 export async function seedDatabase(dataSource?: DataSource) {
   console.log('🌱 Seeding database with test data...');
 
@@ -77,22 +93,11 @@ export async function seedDatabase(dataSource?: DataSource) {
       lesseeId = existingLessee[0].id;
     }
 
-    // Admin user (acesso ao painel admin quando ADMIN_EMAIL=admin@cargo.com)
-    await ds.query(`
-      INSERT INTO users (
-        "email", "password", "firstName", "lastName", "cpfCnpj",
-        "userType", "status", "phone", "city", "state"
-      ) VALUES (
-        'admin@cargo.com', $1, 'Admin', 'Sistema', '11122233344',
-        'both', 'active', '11000000000', 'São Paulo', 'SP'
-      )
-      ON CONFLICT (email) DO NOTHING
-    `, [hashedPassword]);
+    await ensureAdminUser(ds, hashedPassword);
 
     console.log('✅ Test users created/found');
     console.log('   - Lessor ID:', lessorId);
     console.log('   - Lessee ID:', lesseeId);
-    console.log('   - Admin: admin@cargo.com (defina ADMIN_EMAIL=admin@cargo.com no .env)');
 
     // Create test vehicles
     const vehicles = [

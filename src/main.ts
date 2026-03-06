@@ -103,15 +103,16 @@ async function runSeeding() {
     const vehicleCount = await dataSource.query('SELECT COUNT(*) as count FROM vehicles');
     
     if (userCount[0].count > 0 || vehicleCount[0].count > 0) {
-      console.log('📊 Database already has data, skipping seeding');
+      console.log('📊 Database already has data, skipping full seeding');
       console.log(`   Users: ${userCount[0].count}, Vehicles: ${vehicleCount[0].count}`);
+      // Garante que o admin existe mesmo com banco já populado (ex.: produção)
+      const { ensureAdminUser } = await import('./seed');
+      await ensureAdminUser(dataSource);
+      console.log('✅ Admin user ensured');
     } else {
-      console.log('🌱 No data found, running seeding...');
-      
-      // Import and run the seed function
+      console.log('🌱 No data found, running full seeding...');
       const { seedDatabase } = await import('./seed');
       await seedDatabase(dataSource);
-      
       console.log('✅ Seeding completed successfully');
     }
     
