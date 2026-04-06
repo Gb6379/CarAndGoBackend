@@ -15,23 +15,20 @@ export class UserService {
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
-    // Check if user already exists
-    const existingUser = await this.userRepository.findOne({
-      where: [
-        { email: createUserDto.email },
-        { cpfCnpj: createUserDto.cpfCnpj },
-      ],
+    const emailNorm = createUserDto.email.trim().toLowerCase();
+    const existingByEmail = await this.findByEmail(emailNorm);
+    const existingByCpf = await this.userRepository.findOne({
+      where: { cpfCnpj: createUserDto.cpfCnpj },
     });
-
-    if (existingUser) {
+    if (existingByEmail || existingByCpf) {
       throw new ConflictException('User with this email or CPF/CNPJ already exists');
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
 
     const user = this.userRepository.create({
       ...createUserDto,
+      email: emailNorm,
       password: hashedPassword,
     });
 
@@ -58,7 +55,12 @@ export class UserService {
   }
 
   async findByEmail(email: string): Promise<User | null> {
-    return this.userRepository.findOne({ where: { email: email.trim() } });
+    const normalized = (email || '').trim().toLowerCase();
+    if (!normalized) return null;
+    return this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.email) = :email', { email: normalized })
+      .getOne();
   }
 
   async findByCpfCnpj(cpfCnpj: string): Promise<User | null> {

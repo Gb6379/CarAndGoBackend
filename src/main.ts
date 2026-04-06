@@ -145,17 +145,22 @@ async function bootstrap() {
     // Global exception filter for better error logging
     app.useGlobalFilters(new AllExceptionsFilter());
     
-  // Enable CORS for frontend applications
+  // Enable CORS (wildcard strings like *.railway.app are NOT supported by the browser/cors package)
+  const corsOrigins = new Set([
+    'http://localhost:3001',
+    'http://localhost:3000',
+    'http://localhost:19006',
+    'https://carandgoapp-production.up.railway.app',
+    'https://www.carandgo.com.br',
+    'https://carandgo.com.br',
+  ]);
+  const railwayPreview = /^https:\/\/[a-zA-Z0-9-]+\.up\.railway\.app$/;
   app.enableCors({
-    origin: [
-      'http://localhost:3001', 
-      'http://localhost:3000', 
-      'http://localhost:19006',
-      'https://carandgoapp-production.up.railway.app',
-      'https://www.carandgo.com.br',
-      'https://carandgo.com.br',
-      'https://*.up.railway.app' // Allow all Railway subdomains
-    ],
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (corsOrigins.has(origin) || railwayPreview.test(origin)) return cb(null, true);
+      return cb(null, false);
+    },
     credentials: true,
   });
 

@@ -8,10 +8,7 @@ export class AuthExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const status = exception.getStatus();
     
-    // Get the message from the exception
     const message = exception.message || 'Unauthorized';
-    
-    // Send a simple string response instead of an object
-    response.status(status).send(message);
+    response.status(status).json({ statusCode: status, message });
   }
 }
