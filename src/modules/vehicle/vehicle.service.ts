@@ -82,51 +82,57 @@ export class VehicleService {
 
   async searchVehicles(filters: any): Promise<Vehicle[]> {
     console.log('Search filters received:', JSON.stringify(filters, null, 2));
-    
+
+    const userLat =
+      filters.userLat !== undefined && filters.userLat !== null && filters.userLat !== ''
+        ? Number(filters.userLat)
+        : NaN;
+    const userLng =
+      filters.userLng !== undefined && filters.userLng !== null && filters.userLng !== ''
+        ? Number(filters.userLng)
+        : NaN;
+    const hasUserCoords = Number.isFinite(userLat) && Number.isFinite(userLng);
+    const radiusKm =
+      filters.radiusKm !== undefined && filters.radiusKm !== null && filters.radiusKm !== ''
+        ? Number(filters.radiusKm)
+        : 50;
+    const effectiveRadius = Number.isFinite(radiusKm) && radiusKm > 0 ? radiusKm : 50;
+
     const query = this.vehicleRepository.createQueryBuilder('vehicle')
       .leftJoinAndSelect('vehicle.owner', 'owner')
       .where('vehicle.isActive = :isActive', { isActive: true })
       .andWhere('vehicle.status IN (:...statuses)', { statuses: ['active', 'pending'] });
 
-    // Location filters - improved to handle both text and coordinate-based search
-    if (filters.location || filters.city) {
+    // Location filters: coordinates alone (ex.: home "perto de você") or text / coords+text
+    if (hasUserCoords) {
+      query.andWhere('vehicle.latitude IS NOT NULL AND vehicle.longitude IS NOT NULL');
+      query.andWhere(
+        `(6371 * acos(cos(radians(:userLat)) * cos(radians(vehicle.latitude)) * cos(radians(vehicle.longitude) - radians(:userLng)) + sin(radians(:userLat)) * sin(radians(vehicle.latitude)))) <= :radius`,
+        {
+          userLat,
+          userLng,
+          radius: effectiveRadius,
+        },
+      );
+    } else if (filters.location || filters.city) {
       const location = filters.location || filters.city;
-      
-      // If user provided coordinates, search by proximity
-      if (filters.userLat && filters.userLng) {
-        // Search within 50km radius (approximately)
+      const locationParts = location.split(',').map((part: string) => part.trim());
+
+      if (locationParts.length >= 2) {
+        const cityPart = locationParts[0];
+        const statePart = locationParts[1];
         query.andWhere(
-          `(6371 * acos(cos(radians(:userLat)) * cos(radians(vehicle.latitude)) * cos(radians(vehicle.longitude) - radians(:userLng)) + sin(radians(:userLat)) * sin(radians(vehicle.latitude)))) <= :radius`,
-          { 
-            userLat: filters.userLat, 
-            userLng: filters.userLng, 
-            radius: 50 
-          }
+          '(LOWER(vehicle.city) LIKE LOWER(:cityPart) OR LOWER(vehicle.address) LIKE LOWER(:cityPart))',
+          { cityPart: `%${cityPart}%` },
         );
-      } else {
-        // Text-based location search
-        // Split location by comma to handle "City, State" format
-        const locationParts = location.split(',').map((part: string) => part.trim());
-        
-        if (locationParts.length >= 2) {
-          // User provided "City, State" format - search for city AND state
-          const cityPart = locationParts[0];
-          const statePart = locationParts[1];
-          query.andWhere(
-            '(LOWER(vehicle.city) LIKE LOWER(:cityPart) OR LOWER(vehicle.address) LIKE LOWER(:cityPart))',
-            { cityPart: `%${cityPart}%` }
-          );
-          // Optionally also match state if provided
-          if (statePart.length === 2) {
-            query.andWhere('LOWER(vehicle.state) = LOWER(:statePart)', { statePart });
-          }
-        } else {
-          // Single search term - search across all location fields
-          query.andWhere(
-            '(LOWER(vehicle.city) LIKE LOWER(:location) OR LOWER(vehicle.address) LIKE LOWER(:location) OR LOWER(vehicle.state) LIKE LOWER(:location))',
-            { location: `%${location}%` }
-          );
+        if (statePart.length === 2) {
+          query.andWhere('LOWER(vehicle.state) = LOWER(:statePart)', { statePart });
         }
+      } else {
+        query.andWhere(
+          '(LOWER(vehicle.city) LIKE LOWER(:location) OR LOWER(vehicle.address) LIKE LOWER(:location) OR LOWER(vehicle.state) LIKE LOWER(:location))',
+          { location: `%${location}%` },
+        );
       }
     }
 
@@ -217,15 +223,13 @@ export class VehicleService {
         query.orderBy('vehicle.rating', sortOrder as 'ASC' | 'DESC');
         break;
       case 'distance':
-        // For distance sorting, we'll need coordinates
-        if (filters.userLat && filters.userLng) {
+        if (hasUserCoords) {
           query.addSelect(
             `(6371 * acos(cos(radians(:userLat)) * cos(radians(vehicle.latitude)) * cos(radians(vehicle.longitude) - radians(:userLng)) + sin(radians(:userLat)) * sin(radians(vehicle.latitude))))`,
-            'distance'
+            'distance',
           );
           query.orderBy('distance', sortOrder as 'ASC' | 'DESC');
         } else {
-          // Fallback to daily rate if no coordinates
           query.orderBy('vehicle.dailyRate', sortOrder as 'ASC' | 'DESC');
         }
         break;
