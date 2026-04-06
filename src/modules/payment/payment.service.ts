@@ -182,8 +182,8 @@ export class PaymentService {
 
   /**
    * Process payment by method (credit_card or pix).
-   * - Cartão: se PagSeguro estiver configurado, retorna paymentUrl para redirecionar; senão simula (dev).
-   * - PIX: por enquanto simulado; para produção pode usar PagSeguro PIX ou outro gateway.
+   * - Se PagSeguro estiver configurado, retorna paymentUrl para redirecionar (cartão ou PIX no checkout do PagSeguro).
+   * - Sem PagSeguro configurado, usa modo simulado (desenvolvimento).
    */
   async payWithMethod(
     bookingId: string,
@@ -206,16 +206,19 @@ export class PaymentService {
 
     const totalAmount = Number(booking.totalAmount);
 
-    // Cartão de crédito: usar PagSeguro (checkout real) se configurado
-    if (method === 'credit_card' && this.isPagSeguroConfigured()) {
+    // Checkout real via PagSeguro: permite cartão/PIX na página segura deles
+    if (this.isPagSeguroConfigured()) {
       const result = await this.createPayment(bookingId, userId);
       return {
         success: true,
         paymentUrl: result.paymentUrl,
         bookingId: result.bookingId,
         amount: result.amount,
-        method: 'credit_card',
-        message: 'Redirecionando para o PagSeguro para concluir o pagamento.',
+        method,
+        message:
+          method === 'pix'
+            ? 'Redirecionando para o PagSeguro para concluir o pagamento via PIX.'
+            : 'Redirecionando para o PagSeguro para concluir o pagamento.',
       };
     }
 

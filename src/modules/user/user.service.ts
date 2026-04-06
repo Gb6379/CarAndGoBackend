@@ -58,11 +58,25 @@ export class UserService {
   }
 
   async findByEmail(email: string): Promise<User | null> {
-    return this.userRepository.findOne({ where: { email } });
+    return this.userRepository.findOne({ where: { email: email.trim() } });
   }
 
   async findByCpfCnpj(cpfCnpj: string): Promise<User | null> {
     return this.userRepository.findOne({ where: { cpfCnpj } });
+  }
+
+  /** Encontra usuário por e-mail ou por CPF/CNPJ (aceita com ou sem formatação). */
+  async findByEmailOrCpf(identifier: string): Promise<User | null> {
+    const trimmed = (identifier || '').trim();
+    if (!trimmed) return null;
+    if (trimmed.includes('@')) {
+      return this.findByEmail(trimmed);
+    }
+    const digitsOnly = trimmed.replace(/\D/g, '');
+    if (digitsOnly.length < 11) return null;
+    const byNormalized = await this.userRepository.findOne({ where: { cpfCnpj: digitsOnly } });
+    if (byNormalized) return byNormalized;
+    return this.userRepository.findOne({ where: { cpfCnpj: trimmed } });
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {

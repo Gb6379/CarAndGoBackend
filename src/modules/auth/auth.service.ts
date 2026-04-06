@@ -20,6 +20,16 @@ export class AuthService {
     return null;
   }
 
+  /** Valida usuário por e-mail ou CPF/CNPJ (para login de locador/locatário). */
+  async validateUserByEmailOrCpf(emailOrCpf: string, password: string): Promise<any> {
+    const user = await this.userService.findByEmailOrCpf(emailOrCpf);
+    if (user && await this.userService.validatePassword(user, password)) {
+      const { password: _, ...result } = user;
+      return result;
+    }
+    return null;
+  }
+
   async login(user: any) {
     const adminEmails = (process.env.ADMIN_EMAIL || '').split(',').map((e: string) => e.trim().toLowerCase()).filter(Boolean);
     const isAdmin = adminEmails.includes(user.email?.toLowerCase());

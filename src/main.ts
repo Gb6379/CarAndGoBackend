@@ -4,6 +4,7 @@ import { AppModule } from './app.module';
 import { DataSource } from 'typeorm';
 import { config } from 'dotenv';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import express from 'express';
 
 config();
 
@@ -135,7 +136,11 @@ async function bootstrap() {
       await runSeeding();
     }
 
-    const app = await NestFactory.create(AppModule);
+    const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+    // Aumentar limite do body para permitir upload de fotos (base64) no anúncio do veículo
+    app.use(express.json({ limit: '50mb' }));
+    app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
     // Global exception filter for better error logging
     app.useGlobalFilters(new AllExceptionsFilter());

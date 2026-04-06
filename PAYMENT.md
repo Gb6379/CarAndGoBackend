@@ -73,12 +73,23 @@ Sem essas variáveis configuradas, o backend usa **modo simulado**: não chama o
 
 ## PIX
 
-O fluxo de **PIX** na tela atual é **simulado**: ao clicar em "Já paguei via PIX", o backend apenas marca a reserva como paga, sem integração com gateway.
+Com `PAGSEGURO_EMAIL` e `PAGSEGURO_TOKEN` configurados, o botão de PIX também usa checkout real do PagSeguro:
 
-Para PIX real, é possível:
+1. Frontend chama `POST /payments/pay` com `method = pix`.
+2. Backend cria checkout no PagSeguro.
+3. Frontend redireciona para `paymentUrl`.
+4. Cliente conclui o PIX no ambiente seguro do PagSeguro.
 
-- Usar **PagSeguro** (checkout com PIX, se disponível no seu plano), ou
-- Integrar outro provedor (ex.: Mercado Pago, Asaas, Pagar.me) que ofereça PIX via API.
+Sem PagSeguro configurado, o sistema permanece em modo simulado (desenvolvimento).
+
+## Split por locador/plataforma
+
+No fluxo atual (checkout padrão PagSeguro v2), o valor é recebido pela conta vinculada às credenciais da aplicação (`PAGSEGURO_EMAIL` / `PAGSEGURO_TOKEN`).
+
+Ou seja:
+
+- Não há split automático por locador neste fluxo.
+- Para split real por recebedor (locador + plataforma), é necessário evoluir para uma integração com suporte nativo a split/multi-recebedor (ou outro gateway que ofereça essa funcionalidade).
 
 ## Resumo
 

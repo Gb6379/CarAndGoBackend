@@ -7,20 +7,19 @@ import { AuthService } from '../auth.service';
 export class LocalStrategy extends PassportStrategy(Strategy) {
   constructor(private authService: AuthService) {
     super({
-      usernameField: 'email',
+      usernameField: 'emailOrCpf',
       passwordField: 'password',
     });
   }
 
-  async validate(email: string, password: string): Promise<any> {
-    const user = await this.authService.validateUser(email, password);
+  async validate(emailOrCpf: string, password: string): Promise<any> {
+    const user = await this.authService.validateUserByEmailOrCpf(emailOrCpf, password);
     if (!user) {
-      // Check if user exists to provide more specific error message
-      const userExists = await this.authService.userService.findByEmail(email);
+      const userExists = await this.authService.userService.findByEmailOrCpf(emailOrCpf);
       if (!userExists) {
-        throw new UnauthorizedException('User not found. Please register first.');
+        throw new UnauthorizedException('Usuário não encontrado. Cadastre-se primeiro.');
       } else {
-        throw new UnauthorizedException('Invalid password. Please try again.');
+        throw new UnauthorizedException('Senha incorreta. Tente novamente.');
       }
     }
     return user;
