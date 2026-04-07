@@ -161,6 +161,23 @@ export class VehicleService {
       );
     }
 
+    const wantManual =
+      filters.transmissionManual === true || filters.transmissionManual === 'true';
+    const wantAutomatic =
+      filters.transmissionAutomatic === true || filters.transmissionAutomatic === 'true';
+    if (wantManual || wantAutomatic) {
+      if (wantManual && !wantAutomatic) {
+        query.andWhere('LOWER(vehicle.transmission) LIKE :tm', { tm: '%manual%' });
+      } else if (!wantManual && wantAutomatic) {
+        query.andWhere('LOWER(vehicle.transmission) LIKE :ta', { ta: '%autom%' });
+      } else {
+        query.andWhere(
+          '(LOWER(vehicle.transmission) LIKE :tm2 OR LOWER(vehicle.transmission) LIKE :ta2)',
+          { tm2: '%manual%', ta2: '%autom%' },
+        );
+      }
+    }
+
     // Year filter
     if (filters.year && filters.year !== 'all') {
       query.andWhere('vehicle.year = :year', { year: filters.year });
