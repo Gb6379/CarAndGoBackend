@@ -271,7 +271,7 @@ export class BookingService {
       for (const row of bookingsToUpdate) {
         // Update status to awaiting_return
         await this.bookingRepository.query(
-          `UPDATE bookings SET status = 'AWAITING_RETURN' WHERE id = $1`,
+          `UPDATE bookings SET status = 'awaiting_return' WHERE id = $1`,
           [row.id]
         );
         updatedCount++;
