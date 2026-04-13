@@ -1,11 +1,12 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { FindOptionsWhere, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { User } from './entities/user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserType } from './enums/user-type.enum';
+import { UserStatus } from './enums/user-status.enum';
 
 @Injectable()
 export class UserService {
@@ -13,6 +14,41 @@ export class UserService {
     @InjectRepository(User)
     private userRepository: Repository<User>,
   ) {}
+
+  toProfileResponse(user: User) {
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      cpfCnpj: user.cpfCnpj,
+      userType: user.userType,
+      status: user.status,
+      phone: user.phone,
+      birthDate: user.birthDate,
+      street: user.street,
+      number: user.number,
+      complement: user.complement,
+      neighborhood: user.neighborhood,
+      city: user.city,
+      state: user.state,
+      zipCode: user.zipCode,
+      documentsVerified: user.documentsVerified,
+      govBrId: user.govBrId,
+      creditScore: user.creditScore,
+      criminalBackgroundCheck: user.criminalBackgroundCheck,
+      profilePhoto: user.profilePhoto,
+      bankName: user.bankName,
+      bankAgency: user.bankAgency,
+      bankAccount: user.bankAccount,
+      bankAccountType: user.bankAccountType,
+      bankHolderName: user.bankHolderName,
+      bankHolderDocument: user.bankHolderDocument,
+      pixKey: user.pixKey,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+  }
 
   async create(createUserDto: CreateUserDto): Promise<User> {
     const emailNorm = createUserDto.email.trim().toLowerCase();
@@ -36,9 +72,7 @@ export class UserService {
   }
 
   async findAll(): Promise<User[]> {
-    return this.userRepository.find({
-      select: ['id', 'email', 'firstName', 'lastName', 'userType', 'status', 'createdAt'],
-    });
+    return this.findForAdmin();
   }
 
   async findOne(id: string): Promise<User> {
@@ -112,9 +146,25 @@ export class UserService {
   }
 
   async findByUserType(userType: UserType): Promise<User[]> {
+    return this.findForAdmin({ userType });
+  }
+
+  async findForAdmin(filters: { userType?: UserType; status?: string } = {}): Promise<User[]> {
+    const where: FindOptionsWhere<User> = {};
+    const normalizedStatus = (filters.status || '').trim().toLowerCase();
+
+    if (filters.userType) {
+      where.userType = filters.userType;
+    }
+
+    if (Object.values(UserStatus).includes(normalizedStatus as UserStatus)) {
+      where.status = normalizedStatus as UserStatus;
+    }
+
     return this.userRepository.find({
-      where: { userType },
-      select: ['id', 'email', 'firstName', 'lastName', 'userType', 'status', 'createdAt'],
+      where: Object.keys(where).length ? where : undefined,
+      select: ['id', 'email', 'firstName', 'lastName', 'userType', 'status', 'documentsVerified', 'createdAt'],
+      order: { createdAt: 'DESC' },
     });
   }
 
@@ -135,6 +185,24 @@ export class UserService {
   async updateStatus(id: string, status: string): Promise<User> {
     const user = await this.findOne(id);
     user.status = status as any;
+    return this.userRepository.save(user);
+  }
+
+  async approveDocuments(id: string): Promise<User> {
+    const [user, cnhDocument, cacDocument] = await Promise.all([
+      this.findOne(id),
+      this.getCnhDocument(id),
+      this.getCacDocument(id),
+    ]);
+
+    if (!cnhDocument || !cacDocument) {
+      throw new BadRequestException('O usuário precisa enviar CNH e CAC antes de ser aprovado.');
+    }
+
+    user.documentsVerified = true;
+    user.criminalBackgroundCheck = true;
+    user.status = UserStatus.ACTIVE;
+
     return this.userRepository.save(user);
   }
 

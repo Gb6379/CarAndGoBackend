@@ -52,10 +52,25 @@ export class PagSeguroService {
 
   async createPayment(paymentRequest: PagSeguroPaymentRequest): Promise<PagSeguroPaymentResponse> {
     try {
-      const sessionId = await this.getSessionId();
-      
       const redirectURL = paymentRequest.redirectURL || `${process.env.FRONTEND_URL || 'http://localhost:3001'}/payment/callback`;
-      const paymentData = {
+      const customerCpf = (paymentRequest.customerDocument || '').replace(/\D/g, '');
+      // PagSeguro v2 costuma validar CPF do comprador; se vier vazio, acaba em 400 genérico.
+      if (!customerCpf) {
+        throw new BadRequestException('CPF do usuário é obrigatório para criar pagamento no PagSeguro.');
+      }
+      if (customerCpf.length !== 11) {
+        throw new BadRequestException('CPF inválido. Informe um CPF com 11 dígitos.');
+      }
+
+      const phoneDigits = (paymentRequest.customerPhone || '').replace(/\D/g, '');
+      // Esperado: DDD + número. Se não vier, usamos fallback para não quebrar.
+      const areaCode = phoneDigits.length >= 10 ? phoneDigits.slice(0, 2) : '11';
+      const phoneNumber = phoneDigits.length >= 10 ? phoneDigits.slice(2, 11) : '999999999';
+
+      const notificationURLBase =
+        process.env.API_URL || process.env.BACKEND_URL || 'http://localhost:3000';
+
+      const paymentData: Record<string, string> = {
         currency: 'BRL',
         itemId1: paymentRequest.bookingId,
         itemDescription1: paymentRequest.description,
@@ -64,27 +79,32 @@ export class PagSeguroService {
         reference: paymentRequest.reference,
         senderName: paymentRequest.customerName,
         senderEmail: paymentRequest.customerEmail,
-        senderCPF: paymentRequest.customerDocument.replace(/\D/g, ''),
-        senderPhone: paymentRequest.customerPhone.replace(/\D/g, ''),
+        senderCPF: customerCpf,
+        senderAreaCode: areaCode,
+        senderPhone: phoneNumber,
         shippingType: '3', // Not specified
         shippingCost: '0.00',
         extraAmount: '0.00',
         redirectURL,
-        notificationURL: `${process.env.API_URL || process.env.BACKEND_URL || 'http://localhost:3000'}/payments/pagseguro/notification`,
+        notificationURL: `${notificationURLBase}/payments/pagseguro/notification`,
         maxUses: '1',
         maxAge: '3600',
       };
 
+      // PagSeguro v2 espera application/x-www-form-urlencoded (não JSON).
+      const form = new URLSearchParams();
+      Object.entries(paymentData).forEach(([k, v]) => form.append(k, v));
+
       const response = await axios.post(
         `${this.baseUrl}/v2/checkout`,
-        paymentData,
+        form,
         {
           params: {
             email: this.email,
             token: this.token,
           },
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           },
         }
       );
@@ -92,7 +112,6 @@ export class PagSeguroService {
       // Parse XML response (PagSeguro returns XML)
       const xmlResponse = response.data;
       const codeMatch = xmlResponse.match(/<code>(.*?)<\/code>/);
-      const dateMatch = xmlResponse.match(/<date>(.*?)<\/date>/);
 
       if (!codeMatch) {
         throw new BadRequestException('Failed to create PagSeguro payment');
@@ -107,7 +126,15 @@ export class PagSeguroService {
         paymentUrl,
       };
     } catch (error) {
-      console.error('PagSeguro payment creation error:', error);
+      // Melhorar diagnóstico do 400 do PagSeguro
+      const maybeAxiosError = error as any;
+      const status = maybeAxiosError?.response?.status;
+      const data = maybeAxiosError?.response?.data;
+      console.error('PagSeguro payment creation error:', {
+        message: maybeAxiosError?.message,
+        status,
+        data,
+      });
       throw new BadRequestException('Failed to create payment with PagSeguro');
     }
   }

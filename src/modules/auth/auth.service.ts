@@ -11,6 +11,23 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
+  private buildAuthUserPayload(user: User, userTypeOverride?: string) {
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      userType: userTypeOverride ?? user.userType,
+      status: user.status,
+      documentsVerified: user.documentsVerified ?? false,
+      profilePhoto: user.profilePhoto ?? undefined,
+      cpfCnpj: user.cpfCnpj ?? '',
+      phone: user.phone ?? '',
+      city: user.city ?? '',
+      state: user.state ?? '',
+    };
+  }
+
   async validateUser(email: string, password: string): Promise<any> {
     const user = await this.userService.findByEmail(email);
     if (user && await this.userService.validatePassword(user, password)) {
@@ -44,16 +61,7 @@ export class AuthService {
 
     return {
       access_token: this.jwtService.sign(payload),
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        userType,
-        status: user.status,
-        documentsVerified: user.documentsVerified ?? false,
-        profilePhoto: user.profilePhoto ?? undefined,
-      },
+      user: this.buildAuthUserPayload(user, userType),
     };
   }
 
@@ -69,16 +77,7 @@ export class AuthService {
 
     return {
       access_token: this.jwtService.sign(payload),
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        userType: user.userType,
-        status: user.status,
-        documentsVerified: user.documentsVerified ?? false,
-        profilePhoto: user.profilePhoto ?? undefined,
-      },
+      user: this.buildAuthUserPayload(user),
     };
   }
 }

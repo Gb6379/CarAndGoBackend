@@ -5,6 +5,7 @@ import { AdminGuard } from '../auth/guards/admin.guard';
 import { UserService } from '../user/user.service';
 import { BookingService } from '../booking/booking.service';
 import { UserType } from '../user/enums/user-type.enum';
+import { AdminEmailService } from './admin-email.service';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, AdminGuard)
@@ -12,6 +13,7 @@ export class AdminController {
   constructor(
     private readonly userService: UserService,
     private readonly bookingService: BookingService,
+    private readonly adminEmailService: AdminEmailService,
   ) {}
 
   /** Dashboard: indicadores gerais */
@@ -27,19 +29,42 @@ export class AdminController {
     };
   }
 
-  /** Listar usuários (locadores e locatários) com filtro opcional */
+  /** Listar usuários com filtro opcional por tipo e status */
   @Get('users')
-  async getUsers(@Query('userType') userType?: string) {
-    if (userType === 'lessor' || userType === 'lessee' || userType === 'both') {
-      return this.userService.findByUserType(userType as UserType);
-    }
-    return this.userService.findAll();
+  async getUsers(@Query('userType') userType?: string, @Query('status') status?: string) {
+    const normalizedUserType =
+      userType === 'lessor' || userType === 'lessee' || userType === 'both'
+        ? (userType as UserType)
+        : undefined;
+
+    return this.userService.findForAdmin({
+      userType: normalizedUserType,
+      status,
+    });
   }
 
   /** Atualizar status de um usuário (active, inactive, suspended, pending) */
   @Patch('users/:id/status')
   async updateUserStatus(@Param('id') id: string, @Body('status') status: string) {
     return this.userService.updateStatus(id, status);
+  }
+
+  /** Aprovar documentos e ativar usuário */
+  @Post('users/:id/approve-documents')
+  async approveUserDocuments(@Param('id') id: string) {
+    const user = await this.userService.approveDocuments(id);
+    const emailSent = await this.adminEmailService.sendDocumentsApprovedEmail(user);
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      userType: user.userType,
+      status: user.status,
+      documentsVerified: user.documentsVerified,
+      emailSent,
+      createdAt: user.createdAt,
+    };
   }
 
   /** Documento CNH de um usuário (para verificação pelo admin) */

@@ -46,14 +46,16 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @Get('profile/me')
-  getProfile(@Request() req) {
-    return this.userService.findOne(req.user.id);
+  async getProfile(@Request() req) {
+    const user = await this.userService.findOne(req.user.id);
+    return this.userService.toProfileResponse(user);
   }
 
   @UseGuards(JwtAuthGuard)
   @Patch('profile/me')
-  updateProfile(@Request() req, @Body() updateUserDto: UpdateUserDto) {
-    return this.userService.update(req.user.id, updateUserDto);
+  async updateProfile(@Request() req, @Body() updateUserDto: UpdateUserDto) {
+    const user = await this.userService.update(req.user.id, updateUserDto);
+    return this.userService.toProfileResponse(user);
   }
 
   @UseGuards(JwtAuthGuard)
