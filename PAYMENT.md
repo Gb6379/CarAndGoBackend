@@ -27,6 +27,158 @@ Ou seja: **o valor é depositado na conta PagSeguro da aplicação; o saque para
 7. O PagSeguro envia uma **notificação** (webhook) para: `API_URL/payments/pagseguro/notification`
 8. O backend recebe a notificação, confere o status e atualiza a reserva para **paga** e **confirmada**.
 
+---
+
+## Passo a passo: testar o checkout em **desenvolvimento** (local)
+
+Use este fluxo quando o código roda no seu PC (`localhost`). A integração do CarGoApp é o **Checkout PagSeguro v2** (redirecionamento): o backend chama `https://ws.sandbox.pagseguro.uol.com.br/v2/checkout` em sandbox. Com `PAGSEGURO_SANDBOX=true`, o backend envia o parâmetro de URL **`token-sandbox`** (exigência do sandbox; não confunda com o token de produção).
+
+### 1) Onde pegar as credenciais certas (sandbox)
+
+| O quê | Onde pegar | Onde colocar |
+|--------|------------|--------------|
+| **E-mail do vendedor (sandbox)** | PagBank **Sandbox** → **Perfis de integração** → **Vendedor** → bloco **Credenciais** → E-mail | `PAGSEGURO_EMAIL` no `backend/.env` |
+| **Token do vendedor (sandbox)** | Mesma tela → **Token** (copiar) | `PAGSEGURO_TOKEN` no `backend/.env` |
+| **Comprador de testes** (e-mail `@sandbox.pagseguro.com.br` + senha) | **MEU SANDBOX** → **Comprador de testes** | **Não** vai no `.env`. Serve só para **entrar na página de pagamento** do PagSeguro depois que o app redireciona |
+
+**Importante:** o **token do “Portal do Desenvolvedor”** (outro lugar) pode ser para APIs novas (REST). Para este projeto (checkout v2), use **sempre** o par **e-mail + token** do perfil **Vendedor** dentro do **ambiente sandbox** (mesmo lugar do print “Vendedor de testes”).
+
+### 2) Arquivo de configuração do backend (local)
+
+Edite apenas **`backend/.env`** (não commite tokens; use `.gitignore`).
+
+Exemplo mínimo para **sandbox local**:
+
+```env
+PAGSEGURO_EMAIL=seu_email_vendedor_sandbox@exemplo.com
+PAGSEGURO_TOKEN=SEU_TOKEN_DO_PERFIL_VENDEDOR_SANDBOX
+PAGSEGURO_SANDBOX=true
+
+FRONTEND_URL=http://localhost:3001
+API_URL=http://localhost:3000
+```
+
+Regras:
+
+- **Não** deixe **duas linhas** `PAGSEGURO_EMAIL` ou `PAGSEGURO_TOKEN` no mesmo arquivo — a última sobrescreve e você acha que configurou uma coisa e o Node lê outra.
+- `FRONTEND_URL` e `API_URL` **sem barra no final** (o código também normaliza, mas evite duplicar `//`).
+- Depois de salvar o `.env`, **reinicie** o backend (`Ctrl+C` e `npm run start:dev` de novo).
+
+### 3) Usuário logado no app precisa de CPF
+
+O backend exige **CPF com 11 dígitos** para montar o checkout no PagSeguro. Garanta que o usuário que está logado no `web-app` tenha `cpfCnpj` preenchido corretamente no cadastro/banco.
+
+### 4) Frontend local apontando para o backend
+
+No repositório, o `web-app` usa API **`http://localhost:3000`** quando você abre o site em `localhost` (ver `web-app/src/services/authService.ts`). O backend Nest deve estar na **porta 3000** (padrão do `backend/.env` `PORT=3000`) ou você precisa alterar essa constante no front.
+
+### 5) Webhook (notificação) em desenvolvimento — o ponto que mais confunde
+
+O PagSeguro precisa chamar:
+
+`POST {API_URL}/payments/pagseguro/notification`
+
+Na sua máquina, `http://localhost:3000` **não é acessível da internet**, então o PagSeguro **não consegue** enviar a notificação, a menos que você use um **túnel**.
+
+**Opção recomendada (ngrok ou similar):**
+
+1. Com o backend rodando na porta 3000, suba o túnel, por exemplo: `ngrok http 3000`.
+2. Copie a URL HTTPS pública (ex.: `https://abc123.ngrok-free.app`).
+3. No **`backend/.env`**, defina:  
+   `API_URL=https://abc123.ngrok-free.app`  
+   (mesma URL que o túnel mostra, **sem** path no final).
+4. No **painel sandbox** (área de configurações do vendedor / notificação de transações), cadastre:  
+   `https://abc123.ngrok-free.app/payments/pagseguro/notification`  
+5. Reinicie o backend.
+
+Assim o `notificationURL` enviado na criação do checkout e a URL do painel ficam **coerentes** com o que o PagSeguro consegue alcançar.
+
+**Opção só para ver a página de pagamento:** você pode testar o **redirecionamento** para o PagSeguro com `API_URL=http://localhost:3000`, mas a **confirmação automática** da reserva via webhook tende a **não funcionar** até existir URL pública.
+
+### 6) Página de retorno após pagar (sandbox)
+
+No painel sandbox, em **Página de redirecionamento**, use:
+
+`http://localhost:3001/payment/callback`
+
+(O app já envia `?bookingId=...` na criação do checkout; manter essa URL alinhada ao `FRONTEND_URL` evita inconsistência.)
+
+Na parte **“redirecionamento com código da transação”**, em geral **deixe vazio** — o CarGoApp hoje identifica a reserva pelo **`bookingId`**, não pelo código da transação do PagSeguro.
+
+### 7) Rodar os serviços e testar
+
+1. Banco Postgres ligado (conforme seu `backend/.env`).
+2. Pasta **`backend`**: `npm run start:dev`.
+3. Pasta **`web-app`**: subir o front (ex.: `npm start`) e abrir `http://localhost:3001`.
+4. Faça login com usuário que tem CPF.
+5. **Reservar Agora** → você vai para **`/payment`**.
+6. **Continuar com PIX** (ou cartão) → o navegador deve ir para **`sandbox.pagseguro.uol.com.br`**.
+7. Na tela do PagSeguro, use o **comprador de testes** (e-mail/senha do sandbox) se pedir login.
+
+### 8) Se ainda der erro
+
+- Confira no terminal do backend a mensagem completa (400/500).
+- Confirme de novo: **`PAGSEGURO_SANDBOX=true`**, token **do Vendedor sandbox**, **sem** variáveis duplicadas.
+- Se aparecer erro de PagSeguro genérico, valide **túnel** + `API_URL` + URL de notificação no painel.
+
+---
+
+## Passo a passo: checkout em **produção**
+
+### 1) Credenciais de produção
+
+| O quê | Onde pegar | Onde colocar |
+|--------|------------|--------------|
+| **E-mail da conta** | Conta **PagBank/PagSeguro real** (mesmo login do vendedor) | `PAGSEGURO_EMAIL` |
+| **Token de integração** | PagBank → **Venda online** → **Integrações** → **Gerar token** (ou enviar por e-mail) | `PAGSEGURO_TOKEN` |
+
+Documentação oficial (produção vs sandbox de token): [Token de autenticação – PagBank Developers](https://developer.pagbank.com.br/docs/token-de-autenticacao).
+
+### 2) Variáveis de ambiente no **servidor** (ex.: Railway)
+
+Configure no painel do provedor **todas** as variáveis do **serviço que roda o Nest** (não basta só o `.env` local):
+
+```env
+PAGSEGURO_EMAIL=email_da_conta_producao@exemplo.com
+PAGSEGURO_TOKEN=TOKEN_PRODUCAO
+PAGSEGURO_SANDBOX=false
+
+FRONTEND_URL=https://www.SEU_DOMINIO.com.br
+API_URL=https://SEU_BACKEND_PUBLICO.exemplo.com
+```
+
+- `API_URL` = URL **pública HTTPS** do backend **sem** barra no final.
+- `FRONTEND_URL` = URL **pública HTTPS** do site onde o usuário navega.
+- Após alterar variáveis no provedor, faça **redeploy** ou **restart** do serviço.
+
+### 3) Painel PagBank (produção)
+
+- **Notificação de transação / URL de notificação:**  
+  `https://SEU_BACKEND_PUBLICO/payments/pagseguro/notification`
+- **Página de redirecionamento:**  
+  `https://www.SEU_DOMINIO.com.br/payment/callback`
+
+Isso deve bater com o que o backend monta usando `API_URL` e `FRONTEND_URL`.
+
+### 4) Deploy do frontend
+
+O site em produção deve chamar o **backend de produção**. No código atual, qualquer host que **não** é `localhost` usa o backend Railway configurado em `authService.ts` — se mudar de domínio ou API, ajuste essa URL no front e faça novo build/deploy.
+
+### 5) Teste controlado
+
+Faça um pagamento de **valor baixo**, confira:
+
+- redirecionamento de volta para `/payment/callback?bookingId=...`;
+- logs do backend recebendo `POST /payments/pagseguro/notification`;
+- reserva atualizada para paga/confirmada quando a notificação for processada.
+
+### 6) Segurança
+
+- Não commite `.env` com token.
+- Não publique print com token em canais públicos; se vazar, **gere novo token** no painel.
+
+---
+
 ## Como ativar pagamento real (PagSeguro)
 
 ### 1. Ter uma conta PagSeguro

@@ -34,10 +34,12 @@ export class PaymentService {
       throw new NotFoundException('User not found');
     }
 
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3001';
+    const frontendUrl = (
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3001'
+    ).replace(/\/+$/, '');
     const paymentRequest = {
       bookingId: booking.id,
-      amount: booking.totalAmount,
+      amount: Number(booking.totalAmount),
       customerEmail: user.email,
       customerName: `${user.firstName} ${user.lastName}`,
       customerDocument: user.cpfCnpj || '',

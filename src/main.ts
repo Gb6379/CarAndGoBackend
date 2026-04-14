@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { DataSource } from 'typeorm';
 import { config } from 'dotenv';
@@ -173,8 +173,16 @@ async function bootstrap() {
         enableImplicitConversion: true,
       },
       exceptionFactory: (errors) => {
-        console.error('Validation errors:', errors);
-        return new Error('Validation failed');
+        const formatted = errors.map((e) => ({
+          property: e.property,
+          constraints: e.constraints,
+          value: e.value,
+        }));
+        console.error('Validation errors:', formatted);
+        return new BadRequestException({
+          message: 'Validation failed',
+          errors: formatted,
+        });
       },
     }));
 

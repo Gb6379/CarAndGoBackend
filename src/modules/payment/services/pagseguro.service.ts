@@ -50,9 +50,62 @@ export class PagSeguroService {
       : 'https://ws.pagseguro.uol.com.br';
   }
 
+  private stripTrailingSlashes(url: string): string {
+    return (url || '').replace(/\/+$/, '');
+  }
+
+  /** PagSeguro v2 devolve erros em XML com tags <message>. */
+  /**
+   * Sandbox: query string deve usar `token-sandbox` (doc PagBank).
+   * Produção: `token`.
+   * @see https://developer.pagbank.com.br/v1/reference/checkout-pagseguro-criacao-checkout-pagseguro
+   */
+  private authQueryParams(): Record<string, string> {
+    if (this.isSandbox) {
+      return { email: this.email, 'token-sandbox': this.token };
+    }
+    return { email: this.email, token: this.token };
+  }
+
+  private extractPagSeguroMessages(xml: string): string[] {
+    if (!xml || typeof xml !== 'string') return [];
+    const messages: string[] = [];
+    const re = /<message>([\s\S]*?)<\/message>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(xml)) !== null) {
+      const text = m[1].trim();
+      if (text) messages.push(text);
+    }
+    return messages;
+  }
+
+  /** Remove tags XML/HTML para mostrar um trecho legível de erro. */
+  private stripMarkup(input: string): string {
+    return (input || '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   async createPayment(paymentRequest: PagSeguroPaymentRequest): Promise<PagSeguroPaymentResponse> {
     try {
-      const redirectURL = paymentRequest.redirectURL || `${process.env.FRONTEND_URL || 'http://localhost:3001'}/payment/callback`;
+      if (!this.email?.trim() || !this.token?.trim()) {
+        throw new BadRequestException(
+          'PagSeguro: configure PAGSEGURO_EMAIL e PAGSEGURO_TOKEN.',
+        );
+      }
+
+      // TypeORM devolve `decimal` como string em runtime; PagSeguro precisa de "12.34".
+      const amountNum = Number(paymentRequest.amount);
+      if (!Number.isFinite(amountNum) || amountNum <= 0) {
+        throw new BadRequestException('Valor do pagamento inválido.');
+      }
+
+      const frontendBase = this.stripTrailingSlashes(
+        process.env.FRONTEND_URL || 'http://localhost:3001',
+      );
+      const redirectURL =
+        paymentRequest.redirectURL || `${frontendBase}/payment/callback`;
       const customerCpf = (paymentRequest.customerDocument || '').replace(/\D/g, '');
       // PagSeguro v2 costuma validar CPF do comprador; se vier vazio, acaba em 400 genérico.
       if (!customerCpf) {
@@ -67,26 +120,59 @@ export class PagSeguroService {
       const areaCode = phoneDigits.length >= 10 ? phoneDigits.slice(0, 2) : '11';
       const phoneNumber = phoneDigits.length >= 10 ? phoneDigits.slice(2, 11) : '999999999';
 
-      const notificationURLBase =
-        process.env.API_URL || process.env.BACKEND_URL || 'http://localhost:3000';
+      const notificationURLBase = this.stripTrailingSlashes(
+        process.env.API_URL || process.env.BACKEND_URL || 'http://localhost:3000',
+      );
+      const fullNotificationUrl = `${notificationURLBase}/payments/pagseguro/notification`;
+
+      if (
+        !this.isSandbox &&
+        /localhost|127\.0\.0\.1/i.test(fullNotificationUrl)
+      ) {
+        throw new BadRequestException(
+          'PagSeguro em produção não aceita URL de notificação em localhost. Para testar no PC: defina PAGSEGURO_SANDBOX=true e use e-mail + token de sandbox, ou exponha o backend com um túnel (ex.: ngrok) e coloque essa URL pública em API_URL.',
+        );
+      }
+      if (!this.isSandbox && /localhost|127\.0\.0\.1/i.test(redirectURL)) {
+        throw new BadRequestException(
+          'PagSeguro em produção costuma exigir URL de retorno (redirect) acessível na internet, não localhost. Use sandbox ou um domínio/túnel HTTPS no FRONTEND_URL.',
+        );
+      }
+
+      // Sandbox: e-mail do comprador deve ser @sandbox.pagseguro.com.br (doc PagBank).
+      let senderEmail = (paymentRequest.customerEmail || '').trim();
+      if (this.isSandbox) {
+        if (!senderEmail.toLowerCase().endsWith('@sandbox.pagseguro.com.br')) {
+          const localPart =
+            (senderEmail.split('@')[0] || 'comprador')
+              .replace(/[^a-zA-Z0-9._-]/g, '')
+              .slice(0, 48) || 'comprador';
+          senderEmail = `${localPart}@sandbox.pagseguro.com.br`;
+        }
+      }
 
       const paymentData: Record<string, string> = {
         currency: 'BRL',
-        itemId1: paymentRequest.bookingId,
-        itemDescription1: paymentRequest.description,
-        itemAmount1: paymentRequest.amount.toFixed(2),
+        // itemId alfanumérico (evita rejeição por hífens do UUID)
+        itemId1: paymentRequest.bookingId.replace(/-/g, ''),
+        itemDescription1: paymentRequest.description.slice(0, 100),
+        itemAmount1: amountNum.toFixed(2),
         itemQuantity1: '1',
-        reference: paymentRequest.reference,
-        senderName: paymentRequest.customerName,
-        senderEmail: paymentRequest.customerEmail,
+        // Peso mínimo (gramas); exigido em vários exemplos da API v2
+        itemWeight1: '1',
+        reference: paymentRequest.reference.slice(0, 200),
+        senderName: paymentRequest.customerName.slice(0, 50),
+        senderEmail,
         senderCPF: customerCpf,
         senderAreaCode: areaCode,
         senderPhone: phoneNumber,
+        receiverEmail: this.email,
+        shippingAddressRequired: 'false',
         shippingType: '3', // Not specified
         shippingCost: '0.00',
         extraAmount: '0.00',
         redirectURL,
-        notificationURL: `${notificationURLBase}/payments/pagseguro/notification`,
+        notificationURL: fullNotificationUrl,
         maxUses: '1',
         maxAge: '3600',
       };
@@ -99,21 +185,23 @@ export class PagSeguroService {
         `${this.baseUrl}/v2/checkout`,
         form,
         {
-          params: {
-            email: this.email,
-            token: this.token,
-          },
+          params: this.authQueryParams(),
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Content-Type':
+              'application/x-www-form-urlencoded; charset=ISO-8859-1',
           },
         }
       );
 
       // Parse XML response (PagSeguro returns XML)
-      const xmlResponse = response.data;
+      const xmlResponse = response.data as string;
       const codeMatch = xmlResponse.match(/<code>(.*?)<\/code>/);
+      const errorMessages = this.extractPagSeguroMessages(xmlResponse);
 
       if (!codeMatch) {
+        if (errorMessages.length) {
+          throw new BadRequestException(errorMessages.join(' | '));
+        }
         throw new BadRequestException('Failed to create PagSeguro payment');
       }
 
@@ -126,7 +214,7 @@ export class PagSeguroService {
         paymentUrl,
       };
     } catch (error) {
-      // Melhorar diagnóstico do 400 do PagSeguro
+      if (error instanceof BadRequestException) throw error;
       const maybeAxiosError = error as any;
       const status = maybeAxiosError?.response?.status;
       const data = maybeAxiosError?.response?.data;
@@ -135,6 +223,32 @@ export class PagSeguroService {
         status,
         data,
       });
+      if (typeof data === 'string') {
+        const msgs = this.extractPagSeguroMessages(data);
+        if (msgs.length) {
+          throw new BadRequestException(msgs.join(' | '));
+        }
+      }
+      if (status === 401 || status === 403) {
+        throw new BadRequestException(
+          'PagSeguro recusou as credenciais (e-mail/token). Em sandbox use o e-mail e o token do vendedor em https://sandbox.pagseguro.uol.com.br/ → Perfis de Integração → Vendedor (não use o token só do portaldev se a API v2 rejeitar).',
+        );
+      }
+      if (status === 500 || status === 502 || status === 503) {
+        throw new BadRequestException(
+          'PagSeguro retornou erro no servidor (500). Confira: PAGSEGURO_SANDBOX=true, e-mail e token do perfil Vendedor (sandbox), e se o erro persistia antes: o sandbox exige o parâmetro de URL token-sandbox (já corrigido no backend).',
+        );
+      }
+
+      // Fallback de diagnóstico: expõe status e parte do payload de erro do PagSeguro.
+      if (status) {
+        const raw = typeof data === 'string' ? data : JSON.stringify(data || {});
+        const readable = this.stripMarkup(raw).slice(0, 280);
+        throw new BadRequestException(
+          `PagSeguro checkout falhou (HTTP ${status}). ${readable || 'Sem detalhes no corpo da resposta.'}`,
+        );
+      }
+
       throw new BadRequestException('Failed to create payment with PagSeguro');
     }
   }
@@ -144,10 +258,7 @@ export class PagSeguroService {
       const response = await axios.get(
         `${this.baseUrl}/v3/transactions/${transactionId}`,
         {
-          params: {
-            email: this.email,
-            token: this.token,
-          },
+          params: this.authQueryParams(),
         }
       );
 
@@ -183,10 +294,7 @@ export class PagSeguroService {
       const response = await axios.get(
         `${this.baseUrl}/v3/transactions/notifications/${notificationCode}`,
         {
-          params: {
-            email: this.email,
-            token: this.token,
-          },
+          params: this.authQueryParams(),
         }
       );
 
@@ -231,10 +339,7 @@ export class PagSeguroService {
         `${this.baseUrl}/v2/transactions/refunds`,
         refundData,
         {
-          params: {
-            email: this.email,
-            token: this.token,
-          },
+          params: this.authQueryParams(),
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
           },
@@ -258,10 +363,7 @@ export class PagSeguroService {
         `${this.baseUrl}/v2/sessions`,
         null,
         {
-          params: {
-            email: this.email,
-            token: this.token,
-          },
+          params: this.authQueryParams(),
         }
       );
 

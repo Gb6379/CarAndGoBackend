@@ -20,8 +20,9 @@ export class CreateBookingDto {
   @IsNumber()
   dailyRate: number;
 
+  @IsOptional()
   @IsNumber()
-  hourlyRate: number;
+  hourlyRate?: number;
 
   @IsOptional()
   @IsNumber()
