@@ -2,36 +2,37 @@
 
 ## Tecnologia utilizada
 
-O pagamento por **cartão de crédito** em uso real é processado pelo **PagSeguro** (UOL PagSeguro):
+O pagamento em uso real é processado pelo **Checkout PagBank** (redirecionamento para página segura do PagBank/PagSeguro):
 
-- **Site:** https://pagseguro.uol.com.br
-- **API:** Checkout PagSeguro (o cliente é redirecionado para a página segura do PagSeguro para digitar o cartão).
-- O valor é cobrado pelo PagSeguro e o dinheiro cai na **conta PagSeguro** vinculada às credenciais da aplicação.
+- **Site:** https://pagbank.com.br / https://pagseguro.uol.com.br
+- **API atual do projeto:** `POST /checkouts` em `https://sandbox.api.pagseguro.com` (sandbox) e `https://api.pagseguro.com` (produção).
+- **Autenticação:** token Bearer de integração da conta (`PAGSEGURO_TOKEN`), com `PAGSEGURO_SANDBOX=true|false`.
+- O valor é cobrado pelo PagBank e cai na **conta PagBank/PagSeguro** vinculada às credenciais da aplicação.
 
 ## Para onde vai o valor
 
-1. O cliente paga na página do PagSeguro (cartão ou boleto/PIX, conforme ofertado pelo PagSeguro no checkout).
+1. O cliente paga na página de checkout do PagBank/PagSeguro (cartão, PIX, boleto conforme habilitado).
 2. O valor é creditado na **conta PagSeguro** associada ao e-mail e token configurados no backend (`PAGSEGURO_EMAIL` e `PAGSEGURO_TOKEN`).
-3. A partir do **painel do PagSeguro**, você faz o saque para sua **conta bancária** (transferência para a conta cadastrada no PagSeguro).
+3. A partir do **painel PagBank/PagSeguro**, você faz o saque para sua **conta bancária**.
 
-Ou seja: **o valor é depositado na conta PagSeguro da aplicação; o saque para a conta bancária é feito pelo titular dessa conta no painel do PagSeguro.**
+Ou seja: **o valor é depositado na conta PagBank/PagSeguro da aplicação; o saque para a conta bancária é feito pelo titular dessa conta no painel.**
 
 ## Fluxo em produção (cartão de crédito)
 
 1. Usuário clica em "Reservar Agora" → vai para a tela de pagamento.
 2. Escolhe "Cartão de crédito" e clica em "Pagar com Cartão".
-3. Backend cria a reserva (status pendente) e chama a API do PagSeguro para criar um checkout.
-4. O frontend redireciona o usuário para a **URL de pagamento do PagSeguro** (página deles, segura).
-5. O cliente digita o cartão na página do PagSeguro e conclui o pagamento.
+3. Backend cria a reserva (status pendente) e chama a API do Checkout PagBank para criar um checkout.
+4. O frontend redireciona o usuário para a **URL de pagamento** retornada em `links[rel=PAY]` pelo PagBank.
+5. O cliente conclui o pagamento na página segura do PagBank/PagSeguro.
 6. O PagSeguro redireciona o cliente de volta para: `FRONTEND_URL/payment/callback?bookingId=...`
-7. O PagSeguro envia uma **notificação** (webhook) para: `API_URL/payments/pagseguro/notification`
+7. O PagBank envia uma **notificação** (webhook) para: `API_URL/payments/pagseguro/notification`
 8. O backend recebe a notificação, confere o status e atualiza a reserva para **paga** e **confirmada**.
 
 ---
 
 ## Passo a passo: testar o checkout em **desenvolvimento** (local)
 
-Use este fluxo quando o código roda no seu PC (`localhost`). A integração do CarGoApp é o **Checkout PagSeguro v2** (redirecionamento): o backend chama `https://ws.sandbox.pagseguro.uol.com.br/v2/checkout` em sandbox. Com `PAGSEGURO_SANDBOX=true`, o backend envia o parâmetro de URL **`token-sandbox`** (exigência do sandbox; não confunda com o token de produção).
+Use este fluxo quando o código roda no seu PC (`localhost`). A integração atual do CarGoApp é o **Checkout PagBank API** (redirecionamento): o backend chama `https://sandbox.api.pagseguro.com/checkouts` em sandbox e `https://api.pagseguro.com/checkouts` em produção, enviando `Authorization: Bearer <token>`.
 
 ### 1) Onde pegar as credenciais certas (sandbox)
 
@@ -39,9 +40,9 @@ Use este fluxo quando o código roda no seu PC (`localhost`). A integração do 
 |--------|------------|--------------|
 | **E-mail do vendedor (sandbox)** | PagBank **Sandbox** → **Perfis de integração** → **Vendedor** → bloco **Credenciais** → E-mail | `PAGSEGURO_EMAIL` no `backend/.env` |
 | **Token do vendedor (sandbox)** | Mesma tela → **Token** (copiar) | `PAGSEGURO_TOKEN` no `backend/.env` |
-| **Comprador de testes** (e-mail `@sandbox.pagseguro.com.br` + senha) | **MEU SANDBOX** → **Comprador de testes** | **Não** vai no `.env`. Serve só para **entrar na página de pagamento** do PagSeguro depois que o app redireciona |
+| **Comprador de testes** (quando aplicável ao sandbox) | **MEU SANDBOX** → **Comprador de testes** | **Não** vai no `.env`. Serve só para testar a experiência de pagamento no ambiente sandbox |
 
-**Importante:** o **token do “Portal do Desenvolvedor”** (outro lugar) pode ser para APIs novas (REST). Para este projeto (checkout v2), use **sempre** o par **e-mail + token** do perfil **Vendedor** dentro do **ambiente sandbox** (mesmo lugar do print “Vendedor de testes”).
+**Importante:** use o token de integração da conta no ambiente correto (sandbox/prod). Se gerar um novo token, o antigo pode ser invalidado.
 
 ### 2) Arquivo de configuração do backend (local)
 
@@ -64,9 +65,9 @@ Regras:
 - `FRONTEND_URL` e `API_URL` **sem barra no final** (o código também normaliza, mas evite duplicar `//`).
 - Depois de salvar o `.env`, **reinicie** o backend (`Ctrl+C` e `npm run start:dev` de novo).
 
-### 3) Usuário logado no app precisa de CPF
+### 3) Dados do usuário logado
 
-O backend exige **CPF com 11 dígitos** para montar o checkout no PagSeguro. Garanta que o usuário que está logado no `web-app` tenha `cpfCnpj` preenchido corretamente no cadastro/banco.
+Para o checkout atual, o backend pode enviar os dados do cliente quando disponíveis (nome, e-mail, documento e telefone), mas o fluxo segue mesmo com campos opcionais ausentes porque o checkout permite preenchimento na página transacional.
 
 ### 4) Frontend local apontando para o backend
 

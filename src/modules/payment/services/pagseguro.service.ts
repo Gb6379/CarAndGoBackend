@@ -11,6 +11,7 @@ export interface PagSeguroPaymentRequest {
   customerPhone: string;
   description: string;
   reference: string;
+  method?: 'credit_card' | 'pix';
   /** URL para onde o usuário será redirecionado após o pagamento (ex: frontend/payment/callback?bookingId=xxx) */
   redirectURL?: string;
 }
@@ -32,11 +33,13 @@ export interface PagSeguroTransaction {
   paymentMethod: string;
   createdAt: Date;
   updatedAt: Date;
+  reference?: string;
 }
 
 @Injectable()
 export class PagSeguroService {
-  private readonly baseUrl: string;
+  private readonly legacyBaseUrl: string;
+  private readonly checkoutApiBaseUrl: string;
   private readonly email: string;
   private readonly token: string;
   private readonly isSandbox: boolean;
@@ -45,26 +48,53 @@ export class PagSeguroService {
     this.email = this.configService.get<string>('PAGSEGURO_EMAIL');
     this.token = this.configService.get<string>('PAGSEGURO_TOKEN');
     this.isSandbox = this.configService.get<string>('PAGSEGURO_SANDBOX') === 'true';
-    this.baseUrl = this.isSandbox 
+    this.legacyBaseUrl = this.isSandbox
       ? 'https://ws.sandbox.pagseguro.uol.com.br'
       : 'https://ws.pagseguro.uol.com.br';
+    this.checkoutApiBaseUrl = this.isSandbox
+      ? 'https://sandbox.api.pagseguro.com'
+      : 'https://api.pagseguro.com';
   }
 
   private stripTrailingSlashes(url: string): string {
     return (url || '').replace(/\/+$/, '');
   }
 
-  /** PagSeguro v2 devolve erros em XML com tags <message>. */
+  private stripMarkup(input: string): string {
+    return (input || '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private toCents(amount: number): number {
+    return Math.round(Number(amount) * 100);
+  }
+
+  private safeDate(dateValue: any): Date {
+    const parsed = new Date(dateValue);
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date();
+    }
+    return parsed;
+  }
+
   /**
-   * Sandbox: query string deve usar `token-sandbox` (doc PagBank).
-   * Produção: `token`.
-   * @see https://developer.pagbank.com.br/v1/reference/checkout-pagseguro-criacao-checkout-pagseguro
+   * Sandbox legado (v2 XML) usa query param `token-sandbox`.
+   * Produção legado (v2 XML) usa query param `token`.
    */
-  private authQueryParams(): Record<string, string> {
+  private authQueryParamsLegacy(): Record<string, string> {
     if (this.isSandbox) {
       return { email: this.email, 'token-sandbox': this.token };
     }
     return { email: this.email, token: this.token };
+  }
+
+  private getCheckoutHeaders() {
+    return {
+      Authorization: `Bearer ${this.token}`,
+      'Content-Type': 'application/json',
+    };
   }
 
   private extractPagSeguroMessages(xml: string): string[] {
@@ -79,138 +109,224 @@ export class PagSeguroService {
     return messages;
   }
 
-  /** Remove tags XML/HTML para mostrar um trecho legível de erro. */
-  private stripMarkup(input: string): string {
-    return (input || '')
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+  private normalizeCheckoutPhone(phoneRaw?: string) {
+    const digits = (phoneRaw || '').replace(/\D/g, '');
+    const area = digits.length >= 10 ? digits.slice(0, 2) : '11';
+    const rest = digits.length >= 10 ? digits.slice(2) : '999999999';
+    let number = rest.slice(0, 9);
+    if (number.length < 9) {
+      number = number.padEnd(9, '9');
+    }
+    if (!number.startsWith('9')) {
+      number = `9${number.slice(1)}`;
+    }
+    return {
+      country: '+55',
+      area,
+      number,
+    };
   }
 
-  async createPayment(paymentRequest: PagSeguroPaymentRequest): Promise<PagSeguroPaymentResponse> {
+  private buildCheckoutCustomer(paymentRequest: PagSeguroPaymentRequest) {
+    const name = (paymentRequest.customerName || '').trim().slice(0, 120);
+    const email = (paymentRequest.customerEmail || '').trim();
+    const taxId = (paymentRequest.customerDocument || '').replace(/\D/g, '');
+    if (!name || !email) return undefined;
+    if (taxId.length !== 11 && taxId.length !== 14) return undefined;
+    return {
+      name,
+      email,
+      tax_id: taxId,
+      phone: this.normalizeCheckoutPhone(paymentRequest.customerPhone),
+    };
+  }
+
+  private extractCheckoutPayLink(checkout: any): string | undefined {
+    const links = Array.isArray(checkout?.links) ? checkout.links : [];
+    const payLink = links.find(
+      (l: any) =>
+        String(l?.rel || '').toUpperCase() === 'PAY' &&
+        typeof l?.href === 'string',
+    );
+    return payLink?.href;
+  }
+
+  private formatCheckoutApiError(data: any): string | undefined {
+    if (Array.isArray(data?.error_messages)) {
+      const errors = data.error_messages
+        .map((e: any) => {
+          const desc = String(e?.description || '').trim();
+          const param = String(e?.parameter_name || '').trim();
+          if (desc && param) return `${param}: ${desc}`;
+          return desc || param;
+        })
+        .filter(Boolean);
+      if (errors.length) return errors.join(' | ');
+    }
+
+    if (typeof data === 'string') {
+      const msgs = this.extractPagSeguroMessages(data);
+      if (msgs.length) return msgs.join(' | ');
+      const readable = this.stripMarkup(data);
+      if (readable) return readable.slice(0, 280);
+      return undefined;
+    }
+
+    if (data && typeof data === 'object') {
+      const readable = this.stripMarkup(JSON.stringify(data));
+      if (readable && readable !== '{}') return readable.slice(0, 280);
+    }
+
+    return undefined;
+  }
+
+  private parseLegacyTransactionXml(
+    xmlResponse: string,
+    fallbackTransactionId: string,
+  ): PagSeguroTransaction {
+    const transactionIdMatch = xmlResponse.match(/<code>(.*?)<\/code>/);
+    const statusMatch = xmlResponse.match(/<status>(.*?)<\/status>/);
+    const amountMatch = xmlResponse.match(/<grossAmount>(.*?)<\/grossAmount>/);
+    const netAmountMatch = xmlResponse.match(/<netAmount>(.*?)<\/netAmount>/);
+    const feeAmountMatch = xmlResponse.match(/<feeAmount>(.*?)<\/feeAmount>/);
+    const paymentMethodMatch = xmlResponse.match(/<paymentMethod>(.*?)<\/paymentMethod>/);
+    const dateMatch = xmlResponse.match(/<date>(.*?)<\/date>/);
+    const lastEventDateMatch = xmlResponse.match(/<lastEventDate>(.*?)<\/lastEventDate>/);
+    const referenceMatch = xmlResponse.match(/<reference>(.*?)<\/reference>/);
+
+    return {
+      transactionId: transactionIdMatch ? transactionIdMatch[1] : fallbackTransactionId,
+      status: statusMatch ? statusMatch[1] : 'UNKNOWN',
+      amount: amountMatch ? parseFloat(amountMatch[1]) : 0,
+      netAmount: netAmountMatch ? parseFloat(netAmountMatch[1]) : 0,
+      feeAmount: feeAmountMatch ? parseFloat(feeAmountMatch[1]) : 0,
+      paymentMethod: paymentMethodMatch ? paymentMethodMatch[1] : 'UNKNOWN',
+      createdAt: this.safeDate(dateMatch ? dateMatch[1] : undefined),
+      updatedAt: this.safeDate(lastEventDateMatch ? lastEventDateMatch[1] : undefined),
+      reference: referenceMatch ? referenceMatch[1] : undefined,
+    };
+  }
+
+  private estimateCheckoutAmountFromPayload(payload: any): number {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const itemsTotalCents = items.reduce((sum: number, item: any) => {
+      const unit = Number(item?.unit_amount) || 0;
+      const qty = Number(item?.quantity) || 1;
+      return sum + unit * qty;
+    }, 0);
+    const additional = Number(payload?.additional_amount) || 0;
+    const discount = Number(payload?.discount_amount) || 0;
+    const shipping = Number(payload?.shipping?.amount) || 0;
+    const total = itemsTotalCents + additional + shipping - discount;
+    return total > 0 ? total / 100 : 0;
+  }
+
+  private parseCheckoutWebhookPayload(payload: any): PagSeguroTransaction {
+    const charge = Array.isArray(payload?.charges) ? payload.charges[0] : undefined;
+    const chargeAmountCents = Number(charge?.amount?.value);
+    const amount = Number.isFinite(chargeAmountCents)
+      ? chargeAmountCents / 100
+      : this.estimateCheckoutAmountFromPayload(payload);
+    const rawStatus = String(charge?.status || payload?.status || 'UNKNOWN');
+    const paymentMethod = String(
+      charge?.payment_method?.type ||
+        payload?.payment_methods?.[0]?.type ||
+        'CHECKOUT',
+    ).toUpperCase();
+    const createdAt = this.safeDate(charge?.created_at || payload?.created_at);
+    const updatedAt = this.safeDate(
+      charge?.paid_at ||
+        charge?.updated_at ||
+        payload?.updated_at ||
+        payload?.created_at,
+    );
+
+    return {
+      transactionId: String(charge?.id || payload?.id || ''),
+      status: rawStatus.toUpperCase(),
+      amount,
+      netAmount: amount,
+      feeAmount: 0,
+      paymentMethod,
+      createdAt,
+      updatedAt,
+      reference: payload?.reference_id ? String(payload.reference_id) : undefined,
+    };
+  }
+
+  async createPayment(
+    paymentRequest: PagSeguroPaymentRequest,
+  ): Promise<PagSeguroPaymentResponse> {
     try {
-      if (!this.email?.trim() || !this.token?.trim()) {
+      if (!this.token?.trim()) {
         throw new BadRequestException(
-          'PagSeguro: configure PAGSEGURO_EMAIL e PAGSEGURO_TOKEN.',
+          'PagBank: configure PAGSEGURO_TOKEN com o token de integração.',
         );
       }
 
-      // TypeORM devolve `decimal` como string em runtime; PagSeguro precisa de "12.34".
       const amountNum = Number(paymentRequest.amount);
       if (!Number.isFinite(amountNum) || amountNum <= 0) {
         throw new BadRequestException('Valor do pagamento inválido.');
       }
+      const amountInCents = this.toCents(amountNum);
 
       const frontendBase = this.stripTrailingSlashes(
         process.env.FRONTEND_URL || 'http://localhost:3001',
       );
       const redirectURL =
         paymentRequest.redirectURL || `${frontendBase}/payment/callback`;
-      const customerCpf = (paymentRequest.customerDocument || '').replace(/\D/g, '');
-      // PagSeguro v2 costuma validar CPF do comprador; se vier vazio, acaba em 400 genérico.
-      if (!customerCpf) {
-        throw new BadRequestException('CPF do usuário é obrigatório para criar pagamento no PagSeguro.');
-      }
-      if (customerCpf.length !== 11) {
-        throw new BadRequestException('CPF inválido. Informe um CPF com 11 dígitos.');
-      }
-
-      const phoneDigits = (paymentRequest.customerPhone || '').replace(/\D/g, '');
-      // Esperado: DDD + número. Se não vier, usamos fallback para não quebrar.
-      const areaCode = phoneDigits.length >= 10 ? phoneDigits.slice(0, 2) : '11';
-      const phoneNumber = phoneDigits.length >= 10 ? phoneDigits.slice(2, 11) : '999999999';
-
-      const notificationURLBase = this.stripTrailingSlashes(
+      const apiBase = this.stripTrailingSlashes(
         process.env.API_URL || process.env.BACKEND_URL || 'http://localhost:3000',
       );
-      const fullNotificationUrl = `${notificationURLBase}/payments/pagseguro/notification`;
+      const notificationURL = `${apiBase}/payments/pagseguro/notification`;
 
-      if (
-        !this.isSandbox &&
-        /localhost|127\.0\.0\.1/i.test(fullNotificationUrl)
-      ) {
-        throw new BadRequestException(
-          'PagSeguro em produção não aceita URL de notificação em localhost. Para testar no PC: defina PAGSEGURO_SANDBOX=true e use e-mail + token de sandbox, ou exponha o backend com um túnel (ex.: ngrok) e coloque essa URL pública em API_URL.',
-        );
-      }
-      if (!this.isSandbox && /localhost|127\.0\.0\.1/i.test(redirectURL)) {
-        throw new BadRequestException(
-          'PagSeguro em produção costuma exigir URL de retorno (redirect) acessível na internet, não localhost. Use sandbox ou um domínio/túnel HTTPS no FRONTEND_URL.',
-        );
-      }
-
-      // Sandbox: e-mail do comprador deve ser @sandbox.pagseguro.com.br (doc PagBank).
-      let senderEmail = (paymentRequest.customerEmail || '').trim();
-      if (this.isSandbox) {
-        if (!senderEmail.toLowerCase().endsWith('@sandbox.pagseguro.com.br')) {
-          const localPart =
-            (senderEmail.split('@')[0] || 'comprador')
-              .replace(/[^a-zA-Z0-9._-]/g, '')
-              .slice(0, 48) || 'comprador';
-          senderEmail = `${localPart}@sandbox.pagseguro.com.br`;
-        }
-      }
-
-      const paymentData: Record<string, string> = {
-        currency: 'BRL',
-        // itemId alfanumérico (evita rejeição por hífens do UUID)
-        itemId1: paymentRequest.bookingId.replace(/-/g, ''),
-        itemDescription1: paymentRequest.description.slice(0, 100),
-        itemAmount1: amountNum.toFixed(2),
-        itemQuantity1: '1',
-        // Peso mínimo (gramas); exigido em vários exemplos da API v2
-        itemWeight1: '1',
-        reference: paymentRequest.reference.slice(0, 200),
-        senderName: paymentRequest.customerName.slice(0, 50),
-        senderEmail,
-        senderCPF: customerCpf,
-        senderAreaCode: areaCode,
-        senderPhone: phoneNumber,
-        receiverEmail: this.email,
-        shippingAddressRequired: 'false',
-        shippingType: '3', // Not specified
-        shippingCost: '0.00',
-        extraAmount: '0.00',
-        redirectURL,
-        notificationURL: fullNotificationUrl,
-        maxUses: '1',
-        maxAge: '3600',
+      const method =
+        paymentRequest.method === 'pix' ? 'PIX' : 'CREDIT_CARD';
+      const payload: any = {
+        reference_id: (paymentRequest.reference || `BOOKING_${paymentRequest.bookingId}`).slice(0, 64),
+        customer_modifiable: true,
+        items: [
+          {
+            reference_id: String(paymentRequest.bookingId || '').slice(0, 100),
+            name: String(paymentRequest.description || 'Reserva CarGo').slice(
+              0,
+              100,
+            ),
+            quantity: 1,
+            unit_amount: amountInCents,
+          },
+        ],
+        payment_methods: [{ type: method }],
+        redirect_url: redirectURL,
+        return_url: redirectURL,
+        notification_urls: [notificationURL],
+        payment_notification_urls: [notificationURL],
       };
 
-      // PagSeguro v2 espera application/x-www-form-urlencoded (não JSON).
-      const form = new URLSearchParams();
-      Object.entries(paymentData).forEach(([k, v]) => form.append(k, v));
-
-      const response = await axios.post(
-        `${this.baseUrl}/v2/checkout`,
-        form,
-        {
-          params: this.authQueryParams(),
-          headers: {
-            'Content-Type':
-              'application/x-www-form-urlencoded; charset=ISO-8859-1',
-          },
-        }
-      );
-
-      // Parse XML response (PagSeguro returns XML)
-      const xmlResponse = response.data as string;
-      const codeMatch = xmlResponse.match(/<code>(.*?)<\/code>/);
-      const errorMessages = this.extractPagSeguroMessages(xmlResponse);
-
-      if (!codeMatch) {
-        if (errorMessages.length) {
-          throw new BadRequestException(errorMessages.join(' | '));
-        }
-        throw new BadRequestException('Failed to create PagSeguro payment');
+      const customer = this.buildCheckoutCustomer(paymentRequest);
+      if (customer) {
+        payload.customer = customer;
       }
 
-      const transactionCode = codeMatch[1];
-      const paymentUrl = `${this.isSandbox ? 'https://sandbox.pagseguro.uol.com.br' : 'https://pagseguro.uol.com.br'}/v2/checkout/payment.html?code=${transactionCode}`;
+      const response = await axios.post(
+        `${this.checkoutApiBaseUrl}/checkouts`,
+        payload,
+        {
+          headers: this.getCheckoutHeaders(),
+        },
+      );
+
+      const checkout = response.data || {};
+      const paymentUrl = this.extractCheckoutPayLink(checkout);
+      if (!paymentUrl) {
+        throw new BadRequestException(
+          'PagBank não retornou link de pagamento (link PAY) na criação do checkout.',
+        );
+      }
 
       return {
-        transactionId: transactionCode,
-        status: 'PENDING',
+        transactionId: String(checkout.id || payload.reference_id),
+        status: String(checkout.status || 'WAITING'),
         paymentUrl,
       };
     } catch (error) {
@@ -218,117 +334,130 @@ export class PagSeguroService {
       const maybeAxiosError = error as any;
       const status = maybeAxiosError?.response?.status;
       const data = maybeAxiosError?.response?.data;
-      console.error('PagSeguro payment creation error:', {
+      console.error('PagBank checkout creation error:', {
         message: maybeAxiosError?.message,
         status,
         data,
       });
-      if (typeof data === 'string') {
-        const msgs = this.extractPagSeguroMessages(data);
-        if (msgs.length) {
-          throw new BadRequestException(msgs.join(' | '));
-        }
-      }
+
       if (status === 401 || status === 403) {
         throw new BadRequestException(
-          'PagSeguro recusou as credenciais (e-mail/token). Em sandbox use o e-mail e o token do vendedor em https://sandbox.pagseguro.uol.com.br/ → Perfis de Integração → Vendedor (não use o token só do portaldev se a API v2 rejeitar).',
-        );
-      }
-      if (status === 500 || status === 502 || status === 503) {
-        throw new BadRequestException(
-          'PagSeguro retornou erro no servidor (500). Confira: PAGSEGURO_SANDBOX=true, e-mail e token do perfil Vendedor (sandbox), e se o erro persistia antes: o sandbox exige o parâmetro de URL token-sandbox (já corrigido no backend).',
+          'PagSeguro/PagBank recusou as credenciais (token). Gere um token em Vendas > Integrações e confira se PAGSEGURO_SANDBOX está correto para o ambiente.',
         );
       }
 
-      // Fallback de diagnóstico: expõe status e parte do payload de erro do PagSeguro.
-      if (status) {
-        const raw = typeof data === 'string' ? data : JSON.stringify(data || {});
-        const readable = this.stripMarkup(raw).slice(0, 280);
+      const details = this.formatCheckoutApiError(data);
+      if (details) {
         throw new BadRequestException(
-          `PagSeguro checkout falhou (HTTP ${status}). ${readable || 'Sem detalhes no corpo da resposta.'}`,
+          `Falha ao criar checkout no PagBank${status ? ` (HTTP ${status})` : ''}: ${details}`,
         );
       }
 
-      throw new BadRequestException('Failed to create payment with PagSeguro');
+      throw new BadRequestException('Failed to create payment with PagBank Checkout');
     }
   }
 
   async getTransactionStatus(transactionId: string): Promise<PagSeguroTransaction> {
+    // Fluxo novo: Checkout PagBank (ids geralmente começam com CHEC_)
+    if (String(transactionId || '').startsWith('CHEC_')) {
+      try {
+        const response = await axios.get(
+          `${this.checkoutApiBaseUrl}/checkouts/${transactionId}`,
+          {
+            headers: this.getCheckoutHeaders(),
+          },
+        );
+        const checkout = response.data || {};
+        const amount = this.estimateCheckoutAmountFromPayload(checkout);
+        const firstMethod = Array.isArray(checkout?.payment_methods)
+          ? checkout.payment_methods[0]?.type
+          : undefined;
+
+        return {
+          transactionId: String(checkout.id || transactionId),
+          status: String(checkout.status || 'UNKNOWN').toUpperCase(),
+          amount,
+          netAmount: amount,
+          feeAmount: 0,
+          paymentMethod: String(firstMethod || 'CHECKOUT').toUpperCase(),
+          createdAt: this.safeDate(checkout.created_at),
+          updatedAt: this.safeDate(checkout.updated_at || checkout.created_at),
+          reference: checkout.reference_id
+            ? String(checkout.reference_id)
+            : undefined,
+        };
+      } catch (error) {
+        console.error('PagBank checkout status error:', error);
+        throw new BadRequestException(
+          'Failed to get transaction status from PagBank Checkout',
+        );
+      }
+    }
+
+    // Fallback legado (v2/v3 XML), para pagamentos antigos já registrados.
     try {
       const response = await axios.get(
-        `${this.baseUrl}/v3/transactions/${transactionId}`,
+        `${this.legacyBaseUrl}/v3/transactions/${transactionId}`,
         {
-          params: this.authQueryParams(),
-        }
+          params: this.authQueryParamsLegacy(),
+        },
       );
-
-      const xmlResponse = response.data;
-      
-      // Parse XML response
-      const statusMatch = xmlResponse.match(/<status>(.*?)<\/status>/);
-      const amountMatch = xmlResponse.match(/<grossAmount>(.*?)<\/grossAmount>/);
-      const netAmountMatch = xmlResponse.match(/<netAmount>(.*?)<\/netAmount>/);
-      const feeAmountMatch = xmlResponse.match(/<feeAmount>(.*?)<\/feeAmount>/);
-      const paymentMethodMatch = xmlResponse.match(/<paymentMethod>(.*?)<\/paymentMethod>/);
-      const dateMatch = xmlResponse.match(/<date>(.*?)<\/date>/);
-      const lastEventDateMatch = xmlResponse.match(/<lastEventDate>(.*?)<\/lastEventDate>/);
-
-      return {
-        transactionId,
-        status: statusMatch ? statusMatch[1] : 'UNKNOWN',
-        amount: amountMatch ? parseFloat(amountMatch[1]) : 0,
-        netAmount: netAmountMatch ? parseFloat(netAmountMatch[1]) : 0,
-        feeAmount: feeAmountMatch ? parseFloat(feeAmountMatch[1]) : 0,
-        paymentMethod: paymentMethodMatch ? paymentMethodMatch[1] : 'UNKNOWN',
-        createdAt: dateMatch ? new Date(dateMatch[1]) : new Date(),
-        updatedAt: lastEventDateMatch ? new Date(lastEventDateMatch[1]) : new Date(),
-      };
+      return this.parseLegacyTransactionXml(response.data as string, transactionId);
     } catch (error) {
-      console.error('PagSeguro transaction status error:', error);
-      throw new BadRequestException('Failed to get transaction status from PagSeguro');
+      console.error('PagSeguro legacy transaction status error:', error);
+      throw new BadRequestException(
+        'Failed to get transaction status from PagSeguro',
+      );
     }
   }
 
-  async processNotification(notificationCode: string, notificationType: string): Promise<PagSeguroTransaction> {
-    try {
-      const response = await axios.get(
-        `${this.baseUrl}/v3/transactions/notifications/${notificationCode}`,
-        {
-          params: this.authQueryParams(),
-        }
-      );
-
-      const xmlResponse = response.data;
-      
-      // Parse XML response
-      const transactionIdMatch = xmlResponse.match(/<code>(.*?)<\/code>/);
-      const statusMatch = xmlResponse.match(/<status>(.*?)<\/status>/);
-      const amountMatch = xmlResponse.match(/<grossAmount>(.*?)<\/grossAmount>/);
-      const netAmountMatch = xmlResponse.match(/<netAmount>(.*?)<\/netAmount>/);
-      const feeAmountMatch = xmlResponse.match(/<feeAmount>(.*?)<\/feeAmount>/);
-      const paymentMethodMatch = xmlResponse.match(/<paymentMethod>(.*?)<\/paymentMethod>/);
-      const dateMatch = xmlResponse.match(/<date>(.*?)<\/date>/);
-      const lastEventDateMatch = xmlResponse.match(/<lastEventDate>(.*?)<\/lastEventDate>/);
-
-      const transactionId = transactionIdMatch ? transactionIdMatch[1] : notificationCode;
-
-      return {
-        transactionId,
-        status: statusMatch ? statusMatch[1] : 'UNKNOWN',
-        amount: amountMatch ? parseFloat(amountMatch[1]) : 0,
-        netAmount: netAmountMatch ? parseFloat(netAmountMatch[1]) : 0,
-        feeAmount: feeAmountMatch ? parseFloat(feeAmountMatch[1]) : 0,
-        paymentMethod: paymentMethodMatch ? paymentMethodMatch[1] : 'UNKNOWN',
-        createdAt: dateMatch ? new Date(dateMatch[1]) : new Date(),
-        updatedAt: lastEventDateMatch ? new Date(lastEventDateMatch[1]) : new Date(),
-      };
-    } catch (error) {
-      console.error('PagSeguro notification processing error:', error);
-      throw new BadRequestException('Failed to process PagSeguro notification');
+  async processNotification(
+    notificationCode?: string,
+    _notificationType?: string,
+    webhookPayload?: any,
+  ): Promise<PagSeguroTransaction> {
+    // Fluxo novo (Checkout PagBank): webhook JSON no corpo da requisição.
+    if (
+      webhookPayload &&
+      typeof webhookPayload === 'object' &&
+      (webhookPayload.id ||
+        webhookPayload.reference_id ||
+        webhookPayload.status ||
+        webhookPayload.charges)
+    ) {
+      return this.parseCheckoutWebhookPayload(webhookPayload);
     }
+
+    // Fallback legado (PagSeguro v2/v3): notificationCode via query string.
+    if (notificationCode) {
+      try {
+        const response = await axios.get(
+          `${this.legacyBaseUrl}/v3/transactions/notifications/${notificationCode}`,
+          {
+            params: this.authQueryParamsLegacy(),
+          },
+        );
+        return this.parseLegacyTransactionXml(response.data as string, notificationCode);
+      } catch (error) {
+        console.error('PagSeguro legacy notification processing error:', error);
+        throw new BadRequestException('Failed to process PagSeguro notification');
+      }
+    }
+
+    throw new BadRequestException(
+      'Notificação inválida: sem payload JSON de checkout e sem notificationCode.',
+    );
   }
 
   async refundPayment(transactionId: string, refundAmount?: number): Promise<boolean> {
+    // API nova de checkout não usa o mesmo endpoint legado de refund por transactionCode.
+    if (String(transactionId || '').startsWith('CHEC_')) {
+      console.warn(
+        'Refund para checkout CHEC_ via endpoint legado não suportado nesta implementação.',
+      );
+      return false;
+    }
+
     try {
       const refundData = {
         transactionCode: transactionId,
@@ -336,20 +465,18 @@ export class PagSeguroService {
       };
 
       const response = await axios.post(
-        `${this.baseUrl}/v2/transactions/refunds`,
+        `${this.legacyBaseUrl}/v2/transactions/refunds`,
         refundData,
         {
-          params: this.authQueryParams(),
+          params: this.authQueryParamsLegacy(),
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
           },
-        }
+        },
       );
 
-      // Check if refund was successful
-      const xmlResponse = response.data;
+      const xmlResponse = response.data as string;
       const resultMatch = xmlResponse.match(/<result>(.*?)<\/result>/);
-      
       return resultMatch ? resultMatch[1] === 'OK' : false;
     } catch (error) {
       console.error('PagSeguro refund error:', error);
@@ -357,53 +484,44 @@ export class PagSeguroService {
     }
   }
 
-  private async getSessionId(): Promise<string> {
-    try {
-      const response = await axios.post(
-        `${this.baseUrl}/v2/sessions`,
-        null,
-        {
-          params: this.authQueryParams(),
-        }
-      );
-
-      const xmlResponse = response.data;
-      const sessionIdMatch = xmlResponse.match(/<id>(.*?)<\/id>/);
-      
-      if (!sessionIdMatch) {
-        throw new BadRequestException('Failed to get PagSeguro session ID');
-      }
-
-      return sessionIdMatch[1];
-    } catch (error) {
-      console.error('PagSeguro session ID error:', error);
-      throw new BadRequestException('Failed to get session ID from PagSeguro');
-    }
-  }
-
   getPaymentStatusDescription(status: string): string {
+    const normalized = String(status || '').trim().toUpperCase();
     const statusMap: { [key: string]: string } = {
-      '1': 'PENDING', // Aguardando pagamento
-      '2': 'UNDER_REVIEW', // Em análise
-      '3': 'PAID', // Paga
-      '4': 'AVAILABLE', // Disponível
-      '5': 'IN_DISPUTE', // Em disputa
-      '6': 'RETURNED', // Devolvida
-      '7': 'CANCELLED', // Cancelada
+      // PagSeguro legado (numérico)
+      '1': 'PENDING',
+      '2': 'UNDER_REVIEW',
+      '3': 'PAID',
+      '4': 'AVAILABLE',
+      '5': 'IN_DISPUTE',
+      '6': 'RETURNED',
+      '7': 'CANCELLED',
+      // PagBank checkout/order (texto)
+      WAITING: 'PENDING',
+      IN_ANALYSIS: 'UNDER_REVIEW',
+      PAID: 'PAID',
+      DECLINED: 'FAILED',
+      CANCELED: 'CANCELLED',
+      ACTIVE: 'PENDING',
+      INACTIVE: 'CANCELLED',
+      EXPIRED: 'CANCELLED',
+      FAILED: 'FAILED',
+      CANCELLED: 'CANCELLED',
     };
-
-    return statusMap[status] || 'UNKNOWN';
+    return statusMap[normalized] || normalized || 'UNKNOWN';
   }
 
   isPaymentSuccessful(status: string): boolean {
-    return status === '3' || status === '4'; // PAID or AVAILABLE
+    const mapped = this.getPaymentStatusDescription(status);
+    return mapped === 'PAID' || mapped === 'AVAILABLE';
   }
 
   isPaymentPending(status: string): boolean {
-    return status === '1' || status === '2'; // PENDING or UNDER_REVIEW
+    const mapped = this.getPaymentStatusDescription(status);
+    return mapped === 'PENDING' || mapped === 'UNDER_REVIEW';
   }
 
   isPaymentCancelled(status: string): boolean {
-    return status === '7'; // CANCELLED
+    const mapped = this.getPaymentStatusDescription(status);
+    return mapped === 'CANCELLED' || mapped === 'FAILED';
   }
 }

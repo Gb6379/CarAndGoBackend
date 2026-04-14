@@ -37,9 +37,13 @@ export class PaymentController {
   }
 
   @Post('pagseguro/notification')
-  async handlePagSeguroNotification(@Query() query: any) {
+  async handlePagSeguroNotification(@Query() query: any, @Body() body: any) {
     const { notificationCode, notificationType } = query;
-    return this.paymentService.processNotification(notificationCode, notificationType);
+    return this.paymentService.processNotification(
+      notificationCode,
+      notificationType,
+      body,
+    );
   }
 
   @Get('status/:paymentId')
