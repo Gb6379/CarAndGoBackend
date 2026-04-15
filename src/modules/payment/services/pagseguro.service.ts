@@ -45,8 +45,10 @@ export class PagSeguroService {
   private readonly isSandbox: boolean;
 
   constructor(private configService: ConfigService) {
-    this.email = this.configService.get<string>('PAGSEGURO_EMAIL');
-    this.token = this.configService.get<string>('PAGSEGURO_TOKEN');
+    this.email = (this.configService.get<string>('PAGSEGURO_EMAIL') || '').trim();
+    const rawToken = (this.configService.get<string>('PAGSEGURO_TOKEN') || '').trim();
+    // Aceita token puro ou "Bearer <token>" no env (normaliza para token puro).
+    this.token = rawToken.replace(/^Bearer\s+/i, '').trim();
     this.isSandbox = this.configService.get<string>('PAGSEGURO_SANDBOX') === 'true';
     this.legacyBaseUrl = this.isSandbox
       ? 'https://ws.sandbox.pagseguro.uol.com.br'
