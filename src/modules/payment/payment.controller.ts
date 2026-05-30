@@ -46,6 +46,11 @@ export class PaymentController {
     );
   }
 
+  @Post('mercadopago/notification')
+  async handleMercadoPagoNotification(@Query() query: any, @Body() body: any) {
+    return this.paymentService.processMercadoPagoNotification(query, body);
+  }
+
   @Get('status/:paymentId')
   @UseGuards(JwtAuthGuard)
   async getPaymentStatus(@Param('paymentId') paymentId: string) {

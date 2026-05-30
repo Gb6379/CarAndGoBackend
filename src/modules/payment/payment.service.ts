@@ -3,16 +3,19 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PagSeguroService } from './services/pagseguro.service';
+import { MercadoPagoService } from './services/mercadopago.service';
 import { Booking } from '../booking/entities/booking.entity';
 import { BookingStatus } from '../booking/enums/booking-status.enum';
-import { PaymentStatus } from '../booking/enums/payment-status.enum';
 import { User } from '../user/entities/user.entity';
+
+type PaymentGateway = 'mercadopago' | 'pagbank';
 
 @Injectable()
 export class PaymentService {
   constructor(
     private configService: ConfigService,
     private pagSeguroService: PagSeguroService,
+    private mercadoPagoService: MercadoPagoService,
     @InjectRepository(Booking)
     private bookingRepository: Repository<Booking>,
     @InjectRepository(User)
@@ -55,11 +58,15 @@ export class PaymentService {
       redirectURL: `${frontendUrl}/payment/callback?bookingId=${booking.id}`,
     };
 
-    const paymentResponse = await this.pagSeguroService.createPayment(paymentRequest);
+    const gateway = this.getPaymentGateway();
+    const paymentResponse =
+      gateway === 'mercadopago'
+        ? await this.mercadoPagoService.createPayment(paymentRequest)
+        : await this.pagSeguroService.createPayment(paymentRequest);
 
     // Update booking with payment information
     booking.paymentTransactionId = paymentResponse.transactionId;
-    booking.paymentStatus = PaymentStatus.PENDING as any;
+    booking.paymentStatus = 'PENDING' as any;
     await this.bookingRepository.save(booking);
 
     return {
@@ -72,8 +79,9 @@ export class PaymentService {
   }
 
   async processPayment(paymentId: string) {
-    // Get transaction status from PagSeguro
-    const transaction = await this.pagSeguroService.getTransactionStatus(paymentId);
+    const transaction = paymentId.startsWith('MP_')
+      ? await this.mercadoPagoService.getTransactionStatus(paymentId)
+      : await this.pagSeguroService.getTransactionStatus(paymentId);
     
     // Find booking by transaction ID
     const booking = await this.bookingRepository.findOne({
@@ -85,15 +93,26 @@ export class PaymentService {
     }
 
     // Update booking payment status
-    const paymentStatus = this.pagSeguroService.getPaymentStatusDescription(transaction.status);
-    booking.paymentStatus = this.mapGatewayStatusToPaymentStatus(paymentStatus) as any;
+    const paymentStatus = this.getGatewayServiceByTransactionId(
+      paymentId,
+    ).getPaymentStatusDescription(transaction.status);
+    booking.paymentStatus =
+      this.mapGatewayStatusToLegacyDbValue(paymentStatus) as any;
     booking.paymentDate = transaction.createdAt;
     booking.paymentMethod = transaction.paymentMethod;
 
     // If payment is successful, confirm the booking
-    if (this.pagSeguroService.isPaymentSuccessful(transaction.status)) {
+    if (
+      this.getGatewayServiceByTransactionId(paymentId).isPaymentSuccessful(
+        transaction.status,
+      )
+    ) {
       booking.status = BookingStatus.CONFIRMED;
-    } else if (this.pagSeguroService.isPaymentCancelled(transaction.status)) {
+    } else if (
+      this.getGatewayServiceByTransactionId(paymentId).isPaymentCancelled(
+        transaction.status,
+      )
+    ) {
       booking.status = BookingStatus.CANCELLED;
     }
 
@@ -113,7 +132,7 @@ export class PaymentService {
     notificationType?: string,
     webhookPayload?: any,
   ) {
-    // Process PagSeguro notification
+    // Process PagBank/PagSeguro notification
     const transaction = await this.pagSeguroService.processNotification(
       notificationCode,
       notificationType,
@@ -127,8 +146,10 @@ export class PaymentService {
     );
 
     if (booking) {
-      const paymentStatus = this.pagSeguroService.getPaymentStatusDescription(transaction.status);
-      booking.paymentStatus = this.mapGatewayStatusToPaymentStatus(paymentStatus) as any;
+      const paymentStatus =
+        this.pagSeguroService.getPaymentStatusDescription(transaction.status);
+      booking.paymentStatus =
+        this.mapGatewayStatusToLegacyDbValue(paymentStatus) as any;
       booking.paymentDate = transaction.updatedAt;
       booking.paymentMethod = transaction.paymentMethod || booking.paymentMethod;
 
@@ -136,6 +157,47 @@ export class PaymentService {
         booking.status = BookingStatus.CONFIRMED;
       } else if (this.pagSeguroService.isPaymentCancelled(transaction.status)) {
         booking.status = BookingStatus.CANCELLED;
+      }
+
+      await this.bookingRepository.save(booking);
+    }
+
+    return {
+      success: true,
+      transactionId: transaction.transactionId,
+      reference: transaction.reference,
+      bookingFound: !!booking,
+    };
+  }
+
+  async processMercadoPagoNotification(query: any, body: any) {
+    const transaction = await this.mercadoPagoService.processNotification(
+      query,
+      body,
+    );
+
+    const booking = await this.findBookingForNotification(
+      transaction.transactionId,
+      transaction.reference,
+    );
+
+    if (booking) {
+      const paymentStatus =
+        this.mercadoPagoService.getPaymentStatusDescription(transaction.status);
+      booking.paymentStatus =
+        this.mapGatewayStatusToLegacyDbValue(paymentStatus) as any;
+      booking.paymentDate = transaction.updatedAt;
+      booking.paymentMethod = transaction.paymentMethod || booking.paymentMethod;
+
+      if (this.mercadoPagoService.isPaymentSuccessful(transaction.status)) {
+        booking.status = BookingStatus.CONFIRMED;
+      } else if (this.mercadoPagoService.isPaymentCancelled(transaction.status)) {
+        booking.status = BookingStatus.CANCELLED;
+      }
+
+      // Quando o MP confirma pagamento, persistimos ID real do pagamento para consultas/estornos.
+      if (transaction.transactionId) {
+        booking.paymentTransactionId = `MP_PAY_${transaction.transactionId}`;
       }
 
       await this.bookingRepository.save(booking);
@@ -159,13 +221,15 @@ export class PaymentService {
       throw new NotFoundException('Booking not found for this payment');
     }
 
-    // Process refund through PagSeguro
+    // Process refund through configured gateway
     const refundAmount = amount || booking.totalAmount;
-    const refundSuccess = await this.pagSeguroService.refundPayment(paymentId, refundAmount);
+    const refundSuccess = paymentId.startsWith('MP_')
+      ? await this.mercadoPagoService.refundPayment(paymentId, Number(refundAmount))
+      : await this.pagSeguroService.refundPayment(paymentId, refundAmount);
 
     if (refundSuccess) {
       // Update booking status
-      booking.paymentStatus = PaymentStatus.REFUNDED as any;
+      booking.paymentStatus = 'REFUNDED' as any;
       booking.refundDate = new Date();
       booking.refundAmount = refundAmount;
       await this.bookingRepository.save(booking);
@@ -182,10 +246,11 @@ export class PaymentService {
 
   async getPaymentStatus(paymentId: string) {
     try {
-      const transaction = await this.pagSeguroService.getTransactionStatus(paymentId);
+      const gatewayService = this.getGatewayServiceByTransactionId(paymentId);
+      const transaction = await gatewayService.getTransactionStatus(paymentId);
       return {
         paymentId,
-        status: this.pagSeguroService.getPaymentStatusDescription(transaction.status),
+        status: gatewayService.getPaymentStatusDescription(transaction.status),
         amount: transaction.amount,
         netAmount: transaction.netAmount,
         feeAmount: transaction.feeAmount,
@@ -198,11 +263,32 @@ export class PaymentService {
     }
   }
 
-  /** Verifica se PagSeguro está configurado para uso real */
-  private isPagSeguroConfigured(): boolean {
-    const email = this.configService.get<string>('PAGSEGURO_EMAIL');
+  private getPaymentGateway(): PaymentGateway {
+    const raw = String(
+      this.configService.get<string>('PAYMENT_GATEWAY') || 'mercadopago',
+    )
+      .trim()
+      .toLowerCase();
+    if (raw === 'pagbank' || raw === 'pagseguro') return 'pagbank';
+    return 'mercadopago';
+  }
+
+  private getGatewayServiceByTransactionId(paymentId: string) {
+    if (String(paymentId || '').startsWith('MP_')) {
+      return this.mercadoPagoService;
+    }
+    return this.pagSeguroService;
+  }
+
+  /** Verifica se gateway ativo está configurado para uso real */
+  private isGatewayConfigured(): boolean {
+    const gateway = this.getPaymentGateway();
+    if (gateway === 'mercadopago') {
+      const token = this.configService.get<string>('MP_ACCESS_TOKEN');
+      return !!String(token || '').trim();
+    }
     const token = this.configService.get<string>('PAGSEGURO_TOKEN');
-    return !!email && !!token;
+    return !!String(token || '').trim();
   }
 
   /**
@@ -231,8 +317,10 @@ export class PaymentService {
 
     const totalAmount = Number(booking.totalAmount);
 
-    // Checkout real via PagSeguro: permite cartão/PIX na página segura deles
-    if (this.isPagSeguroConfigured()) {
+    const gateway = this.getPaymentGateway();
+
+    // Checkout real via gateway configurado
+    if (this.isGatewayConfigured()) {
       const result = await this.createPayment(bookingId, userId, method);
       return {
         success: true,
@@ -242,15 +330,15 @@ export class PaymentService {
         method,
         message:
           method === 'pix'
-            ? 'Redirecionando para o PagSeguro para concluir o pagamento via PIX.'
-            : 'Redirecionando para o PagSeguro para concluir o pagamento.',
+            ? `Redirecionando para o ${gateway === 'mercadopago' ? 'Mercado Pago' : 'PagBank'} para concluir o pagamento via PIX.`
+            : `Redirecionando para o ${gateway === 'mercadopago' ? 'Mercado Pago' : 'PagBank'} para concluir o pagamento.`,
       };
     }
 
     // PIX ou cartão sem PagSeguro: modo simulado (desenvolvimento)
     const paymentId = `pay_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     booking.paymentTransactionId = paymentId;
-    booking.paymentStatus = PaymentStatus.COMPLETED as any;
+    booking.paymentStatus = 'PAID' as any;
     booking.paymentMethod = method;
     booking.paymentDate = new Date();
     booking.status = BookingStatus.CONFIRMED;
@@ -266,24 +354,32 @@ export class PaymentService {
     };
   }
 
-  private mapGatewayStatusToPaymentStatus(status: string): PaymentStatus {
+  /**
+   * Compatibilidade com enum legado no banco:
+   * bookings_paymentstatus_enum = ('PENDING','PAID','REFUNDED','FAILED')
+   */
+  private mapGatewayStatusToLegacyDbValue(status: string):
+    | 'PENDING'
+    | 'PAID'
+    | 'REFUNDED'
+    | 'FAILED' {
     const normalized = String(status || '').toUpperCase();
     if (normalized === 'PAID' || normalized === 'AVAILABLE') {
-      return PaymentStatus.COMPLETED;
+      return 'PAID';
     }
     if (normalized === 'UNDER_REVIEW') {
-      return PaymentStatus.PROCESSING;
+      return 'PENDING';
     }
     if (normalized === 'PENDING') {
-      return PaymentStatus.PENDING;
+      return 'PENDING';
     }
-    if (normalized === 'CANCELLED') {
-      return PaymentStatus.CANCELLED;
+    if (normalized === 'CANCELLED' || normalized === 'DECLINED') {
+      return 'FAILED';
     }
-    if (normalized === 'FAILED' || normalized === 'DECLINED') {
-      return PaymentStatus.FAILED;
+    if (normalized === 'FAILED') {
+      return 'FAILED';
     }
-    return PaymentStatus.PENDING;
+    return 'PENDING';
   }
 
   private async findBookingForNotification(
