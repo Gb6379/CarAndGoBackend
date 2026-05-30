@@ -22,6 +22,23 @@ export class BookingScheduler {
     }
   }
 
+  // Run every 10 minutes to cancel pending bookings without payment
+  @Cron('0 */10 * * * *')
+  async handlePendingPaymentTimeout() {
+    this.logger.log('Checking overdue pending bookings without payment...');
+    try {
+      const cancelledCount =
+        await this.bookingService.cancelOverduePendingPaymentBookings(30);
+      if (cancelledCount > 0) {
+        this.logger.log(
+          `Cancelled ${cancelledCount} overdue pending bookings and released dates`,
+        );
+      }
+    } catch (error) {
+      this.logger.error('Error canceling overdue pending bookings:', error);
+    }
+  }
+
   // Also run at startup (after 10 seconds delay)
   @Cron('10 * * * * *', { name: 'startup-check' })
   async handleStartupCheck() {

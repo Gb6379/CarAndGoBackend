@@ -321,18 +321,29 @@ export class PaymentService {
 
     // Checkout real via gateway configurado
     if (this.isGatewayConfigured()) {
-      const result = await this.createPayment(bookingId, userId, method);
-      return {
-        success: true,
-        paymentUrl: result.paymentUrl,
-        bookingId: result.bookingId,
-        amount: result.amount,
-        method,
-        message:
-          method === 'pix'
-            ? `Redirecionando para o ${gateway === 'mercadopago' ? 'Mercado Pago' : 'PagBank'} para concluir o pagamento via PIX.`
-            : `Redirecionando para o ${gateway === 'mercadopago' ? 'Mercado Pago' : 'PagBank'} para concluir o pagamento.`,
-      };
+      try {
+        const result = await this.createPayment(bookingId, userId, method);
+        return {
+          success: true,
+          paymentUrl: result.paymentUrl,
+          bookingId: result.bookingId,
+          amount: result.amount,
+          method,
+          message:
+            method === 'pix'
+              ? `Redirecionando para o ${gateway === 'mercadopago' ? 'Mercado Pago' : 'PagBank'} para concluir o pagamento via PIX.`
+              : `Redirecionando para o ${gateway === 'mercadopago' ? 'Mercado Pago' : 'PagBank'} para concluir o pagamento.`,
+        };
+      } catch (error) {
+        // Se o checkout não foi criado (erro de gateway/credencial),
+        // cancela a reserva para liberar as datas imediatamente.
+        booking.status = BookingStatus.CANCELLED;
+        booking.paymentStatus = 'FAILED' as any;
+        booking.returnNotes =
+          'Reserva cancelada automaticamente por falha ao iniciar pagamento.';
+        await this.bookingRepository.save(booking);
+        throw error;
+      }
     }
 
     // PIX ou cartão sem PagSeguro: modo simulado (desenvolvimento)

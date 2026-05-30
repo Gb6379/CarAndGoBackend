@@ -375,4 +375,44 @@ export class BookingService {
       totalRevenue: parseFloat(revenueResult[0]?.totalRevenue) || 0,
     };
   }
+
+  /**
+   * Cancela reservas pendentes sem pagamento após um tempo limite.
+   * Isso libera automaticamente as datas do veículo.
+   */
+  async cancelOverduePendingPaymentBookings(timeoutMinutes = 30): Promise<number> {
+    try {
+      const timeoutAt = new Date(Date.now() - timeoutMinutes * 60 * 1000);
+      const overdueBookings = await this.bookingRepository.query(
+        `SELECT id FROM bookings
+         WHERE LOWER(CAST(status AS TEXT)) = 'pending'
+           AND LOWER(CAST("paymentStatus" AS TEXT)) = 'pending'
+           AND "createdAt" <= $1`,
+        [timeoutAt],
+      );
+
+      let updatedCount = 0;
+      for (const row of overdueBookings) {
+        await this.bookingRepository.query(
+          `UPDATE bookings
+             SET status = 'cancelled',
+                 "paymentStatus" = 'FAILED',
+                 "returnNotes" = COALESCE("returnNotes", 'Reserva cancelada automaticamente por ausência de pagamento no prazo')
+           WHERE id = $1`,
+          [row.id],
+        );
+        updatedCount++;
+      }
+
+      if (updatedCount > 0) {
+        console.log(
+          `Canceled ${updatedCount} overdue pending bookings (timeout: ${timeoutMinutes} minutes)`,
+        );
+      }
+      return updatedCount;
+    } catch (error) {
+      console.error('Error canceling overdue pending bookings:', error);
+      return 0;
+    }
+  }
 }
