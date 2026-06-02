@@ -112,11 +112,12 @@ export class BookingCalculationService {
       };
     }
 
-    const maxDuration = 30 * 24 * 60 * 60 * 1000; // 30 days
+    // Allow full monthly bookings (months with 31 days).
+    const maxDuration = 31 * 24 * 60 * 60 * 1000; // 31 days
     if (endDate.getTime() - startDate.getTime() > maxDuration) {
       return {
         isValid: false,
-        error: 'Maximum booking duration is 30 days'
+        error: 'Maximum booking duration is 31 days'
       };
     }
 
