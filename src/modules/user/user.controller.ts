@@ -113,6 +113,32 @@ export class UserController {
     return { message: 'CAC enviada com sucesso.' };
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('profile/me/verification/crlv')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadCrlvDocument(@Request() req, @UploadedFile() file: UploadedPhotoFile) {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('Nenhum arquivo enviado.');
+    }
+    if (!ALLOWED_VERIFICATION_MIMES.includes(file.mimetype)) {
+      throw new BadRequestException('Formato inválido. Use foto (JPEG, PNG, WebP) ou PDF.');
+    }
+
+    const extractedData = await this.userService.extractCrlvData(file.buffer, file.mimetype);
+    await this.userService.updateCrlvDocument(req.user.id, file.buffer, file.mimetype, extractedData);
+
+    return {
+      message: 'CRLV enviado com sucesso.',
+      extractedData,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('profile/me/verification/crlv/extracted')
+  async getCrlvExtractedData(@Request() req) {
+    return this.userService.getCrlvExtractedData(req.user.id);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.userService.findOne(id);

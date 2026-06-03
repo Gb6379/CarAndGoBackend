@@ -2,11 +2,26 @@ import { Injectable, NotFoundException, ConflictException, BadRequestException }
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
+import { PDFParse } from 'pdf-parse';
 import { User } from './entities/user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserType } from './enums/user-type.enum';
 import { UserStatus } from './enums/user-status.enum';
+
+type CrlvExtractedData = {
+  licensePlate?: string;
+  renavam?: string;
+  chassis?: string;
+  make?: string;
+  model?: string;
+  year?: string;
+  color?: string;
+  fuelType?: string;
+  vehicleType?: string;
+  source?: 'pdf' | 'image' | 'unknown';
+  extractionStatus?: 'parsed' | 'partial' | 'unsupported';
+};
 
 @Injectable()
 export class UserService {
@@ -257,5 +272,157 @@ export class UserService {
       .getRawOne<{ data: Buffer; mimeType: string }>();
     if (!row?.data) return null;
     return { data: row.data, mimeType: row.mimeType || 'application/octet-stream' };
+  }
+
+  private normalizeDocText(raw: string): string {
+    return (raw || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\r/g, '\n')
+      .toUpperCase();
+  }
+
+  private extractField(text: string, patterns: RegExp[]): string | undefined {
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match?.[1]) return match[1].trim();
+    }
+    return undefined;
+  }
+
+  private splitMakeModel(raw?: string): { make?: string; model?: string } {
+    if (!raw) return {};
+    const cleaned = raw.replace(/\s+/g, ' ').trim();
+    const separators = ['/', '-', '|'];
+    for (const separator of separators) {
+      if (cleaned.includes(separator)) {
+        const [make, ...rest] = cleaned.split(separator).map((part) => part.trim()).filter(Boolean);
+        if (!make) return {};
+        const model = rest.join(' ').trim();
+        return { make, model: model || undefined };
+      }
+    }
+    const words = cleaned.split(' ');
+    if (words.length <= 1) return { make: cleaned };
+    return { make: words[0], model: words.slice(1).join(' ') };
+  }
+
+  private mapFuelType(raw?: string): string | undefined {
+    if (!raw) return undefined;
+    const normalized = this.normalizeDocText(raw);
+    if (normalized.includes('ELETR')) return 'eletrico';
+    return 'combustao';
+  }
+
+  private mapVehicleType(raw?: string): string | undefined {
+    if (!raw) return undefined;
+    const normalized = this.normalizeDocText(raw);
+    if (normalized.includes('PICK') || normalized.includes('CAMINHONETE')) return 'pickup';
+    if (normalized.includes('SUV') || normalized.includes('UTILITARIO')) return 'suv';
+    if (normalized.includes('HATCH')) return 'hatchback';
+    if (normalized.includes('SEDAN')) return 'sedan';
+    if (normalized.includes('CONVERS')) return 'convertible';
+    if (normalized.includes('COUPE')) return 'coupe';
+    return undefined;
+  }
+
+  private parseCrlvText(text: string): CrlvExtractedData {
+    const normalized = this.normalizeDocText(text);
+
+    const plateMatch = normalized.match(/\b([A-Z]{3}[0-9][A-Z0-9][0-9]{2})\b/);
+    const licensePlate = plateMatch?.[1];
+
+    const renavam = this.extractField(normalized, [
+      /RENAVAM\s*[:\-]?\s*([0-9.\-]{9,20})/,
+      /CODIGO\s+RENAVAM\s*[:\-]?\s*([0-9.\-]{9,20})/,
+    ])?.replace(/\D/g, '');
+
+    const chassis = this.extractField(normalized, [
+      /CHASSI\s*[:\-]?\s*([A-HJ-NPR-Z0-9]{11,20})/,
+      /CHASSIS\s*[:\-]?\s*([A-HJ-NPR-Z0-9]{11,20})/,
+    ]);
+
+    const makeModelRaw = this.extractField(normalized, [
+      /MARCA(?:\s*\/\s*MODELO)?\s*[:\-]?\s*([^\n]+)/,
+      /MARCA MODELO\s*[:\-]?\s*([^\n]+)/,
+    ]);
+    const { make, model } = this.splitMakeModel(makeModelRaw);
+
+    const year =
+      this.extractField(normalized, [
+        /ANO\s+FABRICACAO\s*\/\s*MODELO\s*[:\-]?\s*([0-9]{4}\s*\/\s*[0-9]{4})/,
+        /ANO\s+MODELO\s*[:\-]?\s*([0-9]{4})/,
+        /ANO\s+FABRICACAO\s*[:\-]?\s*([0-9]{4})/,
+      ])?.match(/[0-9]{4}(?!.*[0-9]{4})/)?.[0] || undefined;
+
+    const color = this.extractField(normalized, [
+      /COR\s*[:\-]?\s*([A-Z ]{3,30})/,
+    ]);
+
+    const fuelRaw = this.extractField(normalized, [
+      /COMBUSTIVEL\s*[:\-]?\s*([A-Z\/ ]{3,40})/,
+    ]);
+
+    const vehicleTypeRaw = this.extractField(normalized, [
+      /ESPECIE\s*\/\s*TIPO\s*[:\-]?\s*([A-Z\/ ]{3,40})/,
+      /TIPO\s*[:\-]?\s*([A-Z\/ ]{3,40})/,
+    ]);
+
+    const extracted: CrlvExtractedData = {
+      licensePlate,
+      renavam,
+      chassis,
+      make,
+      model,
+      year,
+      color,
+      fuelType: this.mapFuelType(fuelRaw),
+      vehicleType: this.mapVehicleType(vehicleTypeRaw),
+      source: 'pdf',
+      extractionStatus: 'partial',
+    };
+
+    const score = [licensePlate, make, model, year, fuelRaw].filter(Boolean).length;
+    extracted.extractionStatus = score >= 4 ? 'parsed' : score >= 2 ? 'partial' : 'unsupported';
+    return extracted;
+  }
+
+  async extractCrlvData(data: Buffer, mimeType: string): Promise<CrlvExtractedData> {
+    if (mimeType === 'application/pdf') {
+      const parser = new PDFParse({ data: new Uint8Array(data) });
+      try {
+        const parsed = await parser.getText();
+        return this.parseCrlvText(parsed.text || '');
+      } finally {
+        await parser.destroy();
+      }
+    }
+
+    return {
+      source: 'image',
+      extractionStatus: 'unsupported',
+    };
+  }
+
+  async updateCrlvDocument(
+    userId: string,
+    data: Buffer,
+    mimeType: string,
+    extractedData: CrlvExtractedData,
+  ): Promise<void> {
+    const user = await this.findOne(userId);
+    user.crlvDocumentData = data;
+    user.crlvDocumentMimeType = mimeType;
+    user.crlvExtractedData = extractedData;
+    await this.userRepository.save(user);
+  }
+
+  async getCrlvExtractedData(userId: string): Promise<CrlvExtractedData | null> {
+    const row = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.crlvExtractedData', 'extractedData')
+      .where('user.id = :id', { id: userId })
+      .getRawOne<{ extractedData: CrlvExtractedData }>();
+    return row?.extractedData || null;
   }
 }

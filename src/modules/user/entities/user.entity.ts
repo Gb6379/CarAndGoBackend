@@ -102,6 +102,27 @@ export class User extends BaseEntity {
   @Column({ nullable: true, length: 100, select: false })
   cacDocumentMimeType: string;
 
+  @Column({ type: 'bytea', nullable: true, select: false })
+  crlvDocumentData: Buffer;
+
+  @Column({ nullable: true, length: 100, select: false })
+  crlvDocumentMimeType: string;
+
+  @Column({ type: 'jsonb', nullable: true, select: false })
+  crlvExtractedData: {
+    licensePlate?: string;
+    renavam?: string;
+    chassis?: string;
+    make?: string;
+    model?: string;
+    year?: string;
+    color?: string;
+    fuelType?: string;
+    vehicleType?: string;
+    source?: 'pdf' | 'image' | 'unknown';
+    extractionStatus?: 'parsed' | 'partial' | 'unsupported';
+  };
+
   // Bank details for lessors (receiving payments)
   @Column({ nullable: true })
   bankName: string;
