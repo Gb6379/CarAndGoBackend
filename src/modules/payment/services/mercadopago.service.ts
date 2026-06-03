@@ -120,6 +120,9 @@ export class MercadoPagoService {
         paymentRequest.reference || `BOOKING_${paymentRequest.bookingId}`,
       ).slice(0, 256),
       notification_url: this.getNotificationUrl(),
+      payment_methods: {
+        excluded_payment_types: [{ id: 'ticket' }],
+      },
     };
 
     // Mercado Pago valida back_urls para auto_return; localhost tende a falhar com 400.
