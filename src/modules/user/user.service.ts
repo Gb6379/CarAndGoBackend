@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -25,10 +25,40 @@ type CrlvExtractedData = {
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
   ) {}
+
+  /** Marcas comuns no Brasil (para identificar o valor real no texto do CRLV). */
+  private static readonly KNOWN_MAKES = [
+    'VOLKSWAGEN', 'VW', 'CHEVROLET', 'GM', 'FIAT', 'FORD', 'TOYOTA', 'HONDA',
+    'HYUNDAI', 'RENAULT', 'NISSAN', 'JEEP', 'PEUGEOT', 'CITROEN', 'MITSUBISHI',
+    'KIA', 'BMW', 'MERCEDES-BENZ', 'MERCEDES', 'AUDI', 'VOLVO', 'LAND ROVER',
+    'SUZUKI', 'SUBARU', 'CHERY', 'CAOA CHERY', 'CAOA', 'BYD', 'GWM', 'HAVAL',
+    'RAM', 'DODGE', 'CHRYSLER', 'MINI', 'PORSCHE', 'JAGUAR', 'LEXUS', 'TROLLER',
+    'IVECO', 'AGRALE', 'SSANGYONG', 'SMART', 'LIFAN', 'JAC', 'EFFA', 'GEELY',
+  ];
+
+  /** Cores predominantes possíveis no CRLV. */
+  private static readonly KNOWN_COLORS = [
+    'AMARELA', 'AZUL', 'BEGE', 'BRANCA', 'CINZA', 'CHUMBO', 'CREME', 'DOURADA',
+    'GRENA', 'LARANJA', 'MARROM', 'PEROLA', 'PRATA', 'PRETA', 'ROSA', 'ROXA',
+    'VERDE', 'VERMELHA', 'VINHO', 'FANTASIA',
+  ];
+
+  /** Palavras que indicam fim do nome do modelo no texto do documento. */
+  private static readonly MODEL_STOP_WORDS = new Set([
+    'ESPECIE', 'TIPO', 'PASSAGEIRO', 'AUTOMOVEL', 'CAMINHONETE', 'CAMINHAO',
+    'MOTOCICLETA', 'PLACA', 'CHASSI', 'CHASSIS', 'COR', 'CATEGORIA', 'POTENCIA',
+    'CILINDRADA', 'MOTOR', 'COMBUSTIVEL', 'ANO', 'LOCAL', 'CAT', 'CLA', 'PESO',
+    'EIXOS', 'LOTACAO', 'CARROCERIA', 'NOME', 'CPF', 'CNPJ', 'RENAVAM',
+    'EXERCICIO', 'CODIGO', 'SECRETARIA', 'MINISTERIO', 'REPUBLICA', 'DETRAN',
+    'OBSERVACOES', 'ALIENACAO', 'FIDUCIARIA', 'NAO', 'APLICAVEL', 'DPVAT',
+    'SEGURO', 'ANTERIOR', 'UF', 'CAPACIDADE', 'CMT', 'CRV', 'CRLV', 'DATA',
+  ]);
 
   toProfileResponse(user: User) {
     return {
@@ -290,6 +320,69 @@ export class UserService {
     return undefined;
   }
 
+  private sanitizeExtractedValue(raw?: string): string | undefined {
+    if (!raw) return undefined;
+    const value = raw
+      .replace(/\s+/g, ' ')
+      .replace(/^[:\-]+/, '')
+      .trim();
+    if (!value) return undefined;
+    if (/^[*.\-/\s]+$/.test(value)) return undefined;
+    return value;
+  }
+
+  private looksLikeDocLabel(value?: string): boolean {
+    const v = this.sanitizeExtractedValue(value);
+    if (!v) return true;
+    const normalized = this.normalizeDocText(v);
+    const labelTokens = [
+      'CODIGO',
+      'PLACA',
+      'RENAVAM',
+      'CHASSI',
+      'ANO',
+      'FABRICACAO',
+      'MODELO',
+      'MARCA',
+      'VERSAO',
+      'COR',
+      'PREDOMINANTE',
+      'COMBUSTIVEL',
+      'ESPECIE',
+      'TIPO',
+      'PLACA ANTERIOR',
+      'ANTERIOR',
+      'UF',
+      'EXERCICIO',
+      'CAPACIDADE',
+      'PESO',
+      'MOTOR',
+      'EIXOS',
+      'LOTACAO',
+      'CAT',
+      'CLA',
+      'CATEGORIA',
+      'NOME',
+      'CPF',
+      'CNPJ',
+      'LOCAL',
+      'DATA',
+      'POTENCIA',
+      'CARROCERIA',
+      'ASSINADO',
+      'DPVAT',
+      'SEGURO',
+    ];
+    return labelTokens.some((token) => normalized.includes(token));
+  }
+
+  private extractFieldValidated(text: string, patterns: RegExp[]): string | undefined {
+    const raw = this.extractField(text, patterns);
+    const sanitized = this.sanitizeExtractedValue(raw);
+    if (!sanitized || this.looksLikeDocLabel(sanitized)) return undefined;
+    return sanitized;
+  }
+
   private splitMakeModel(raw?: string): { make?: string; model?: string } {
     if (!raw) return {};
     const cleaned = raw.replace(/\s+/g, ' ').trim();
@@ -307,13 +400,6 @@ export class UserService {
     return { make: words[0], model: words.slice(1).join(' ') };
   }
 
-  private mapFuelType(raw?: string): string | undefined {
-    if (!raw) return undefined;
-    const normalized = this.normalizeDocText(raw);
-    if (normalized.includes('ELETR')) return 'eletrico';
-    return 'combustao';
-  }
-
   private mapVehicleType(raw?: string): string | undefined {
     if (!raw) return undefined;
     const normalized = this.normalizeDocText(raw);
@@ -326,46 +412,118 @@ export class UserService {
     return undefined;
   }
 
+  private escapeRegex(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Extrai marca/modelo procurando o padrão "MARCA/MODELO" cujo lado esquerdo
+   * é uma marca conhecida. Isso evita capturar rótulos como "PLACA ANTERIOR/UF".
+   */
+  private extractMakeModelByKnownMake(joined: string): { make?: string; model?: string } {
+    // Ordena por tamanho desc para casar "MERCEDES-BENZ" antes de "MERCEDES".
+    const makes = [...UserService.KNOWN_MAKES].sort((a, b) => b.length - a.length);
+    for (const mk of makes) {
+      const re = new RegExp(`\\b${this.escapeRegex(mk)}\\s*/\\s*([A-Z0-9][A-Z0-9 .\\-]{0,40})`);
+      const match = joined.match(re);
+      if (!match) continue;
+
+      const make = mk === 'VW' ? 'VOLKSWAGEN' : mk === 'GM' ? 'CHEVROLET' : mk;
+      const model = this.cleanModel(match[1]);
+      return { make, model: model || undefined };
+    }
+    return {};
+  }
+
+  private cleanModel(raw: string): string {
+    const words = raw.replace(/\s+/g, ' ').trim().split(' ');
+    const out: string[] = [];
+    for (const word of words) {
+      const token = word.replace(/[^A-Z0-9.\-]/g, '');
+      if (!token) continue;
+      if (/^\d{3,}$/.test(token)) break; // números longos = outro campo
+      if (UserService.MODEL_STOP_WORDS.has(token)) break;
+      out.push(token);
+      if (out.length >= 4) break; // nomes de modelo costumam ser curtos
+    }
+    return out.join(' ').trim();
+  }
+
+  private extractColorFromList(joined: string): string | undefined {
+    for (const color of UserService.KNOWN_COLORS) {
+      if (new RegExp(`\\b${color}\\b`).test(joined)) return color;
+    }
+    return undefined;
+  }
+
+  private extractFuelFromList(joined: string): string | undefined {
+    if (/\bELETRIC/.test(joined)) return 'eletrico';
+    if (/\b(GASOLINA|ALCOOL|ETANOL|DIESEL|FLEX|HIBRIDO|GNV)\b/.test(joined)) {
+      return 'combustao';
+    }
+    return undefined;
+  }
+
+  private extractYearSmart(joined: string): string | undefined {
+    const labeled =
+      joined.match(/ANO\s*MODELO\D{0,15}((?:19|20)\d{2})/)?.[1] ||
+      joined.match(/((?:19|20)\d{2})\D{0,8}ANO\s*MODELO/)?.[1] ||
+      joined.match(/ANO\s*FABRICACAO\D{0,15}((?:19|20)\d{2})/)?.[1] ||
+      joined.match(/((?:19|20)\d{2})\D{0,8}ANO\s*FABRICACAO/)?.[1];
+    if (labeled) return labeled;
+
+    const years = joined.match(/\b(?:19[89]\d|20[0-3]\d)\b/g) || [];
+    if (!years.length) return undefined;
+
+    const freq = new Map<string, number>();
+    for (const y of years) freq.set(y, (freq.get(y) || 0) + 1);
+
+    let best = years[0];
+    let bestCount = 0;
+    for (const [y, count] of freq) {
+      if (count > bestCount || (count === bestCount && Number(y) < Number(best))) {
+        best = y;
+        bestCount = count;
+      }
+    }
+    return best;
+  }
+
   private parseCrlvText(text: string): CrlvExtractedData {
     const normalized = this.normalizeDocText(text);
+    const joined = normalized.replace(/\s+/g, ' ').trim();
 
     const plateMatch = normalized.match(/\b([A-Z]{3}[0-9][A-Z0-9][0-9]{2})\b/);
     const licensePlate = plateMatch?.[1];
 
-    const renavam = this.extractField(normalized, [
+    const renavam = this.extractFieldValidated(normalized, [
       /RENAVAM\s*[:\-]?\s*([0-9.\-]{9,20})/,
       /CODIGO\s+RENAVAM\s*[:\-]?\s*([0-9.\-]{9,20})/,
     ])?.replace(/\D/g, '');
 
-    const chassis = this.extractField(normalized, [
+    const chassis = this.extractFieldValidated(normalized, [
       /CHASSI\s*[:\-]?\s*([A-HJ-NPR-Z0-9]{11,20})/,
       /CHASSIS\s*[:\-]?\s*([A-HJ-NPR-Z0-9]{11,20})/,
     ]);
 
-    const makeModelRaw = this.extractField(normalized, [
-      /MARCA(?:\s*\/\s*MODELO)?\s*[:\-]?\s*([^\n]+)/,
-      /MARCA MODELO\s*[:\-]?\s*([^\n]+)/,
-    ]);
-    const { make, model } = this.splitMakeModel(makeModelRaw);
+    // Marca/modelo: identifica pelo padrão "MARCA/MODELO" com marca conhecida.
+    let { make, model } = this.extractMakeModelByKnownMake(joined);
+    if (!make) {
+      // Fallback: valor após rótulo, com validação contra rótulos.
+      const makeModelRaw = this.extractFieldValidated(normalized, [
+        /MARCA(?:\s*\/\s*MODELO)?(?:\s*\/\s*VERSAO)?\s*[:\-]?\s*([A-Z][A-Z0-9 .\-]*\/[A-Z0-9 .\-]+)/,
+      ]);
+      const split = this.splitMakeModel(makeModelRaw);
+      make = split.make;
+      model = split.model;
+    }
 
-    const year =
-      this.extractField(normalized, [
-        /ANO\s+FABRICACAO\s*\/\s*MODELO\s*[:\-]?\s*([0-9]{4}\s*\/\s*[0-9]{4})/,
-        /ANO\s+MODELO\s*[:\-]?\s*([0-9]{4})/,
-        /ANO\s+FABRICACAO\s*[:\-]?\s*([0-9]{4})/,
-      ])?.match(/[0-9]{4}(?!.*[0-9]{4})/)?.[0] || undefined;
+    const year = this.extractYearSmart(joined);
+    const color = this.extractColorFromList(joined);
+    const fuelType = this.extractFuelFromList(joined);
 
-    const color = this.extractField(normalized, [
-      /COR\s*[:\-]?\s*([A-Z ]{3,30})/,
-    ]);
-
-    const fuelRaw = this.extractField(normalized, [
-      /COMBUSTIVEL\s*[:\-]?\s*([A-Z\/ ]{3,40})/,
-    ]);
-
-    const vehicleTypeRaw = this.extractField(normalized, [
+    const vehicleTypeRaw = this.extractFieldValidated(normalized, [
       /ESPECIE\s*\/\s*TIPO\s*[:\-]?\s*([A-Z\/ ]{3,40})/,
-      /TIPO\s*[:\-]?\s*([A-Z\/ ]{3,40})/,
     ]);
 
     const extracted: CrlvExtractedData = {
@@ -376,13 +534,13 @@ export class UserService {
       model,
       year,
       color,
-      fuelType: this.mapFuelType(fuelRaw),
+      fuelType,
       vehicleType: this.mapVehicleType(vehicleTypeRaw),
       source: 'pdf',
       extractionStatus: 'partial',
     };
 
-    const score = [licensePlate, make, model, year, fuelRaw].filter(Boolean).length;
+    const score = [licensePlate, make, model, year, fuelType].filter(Boolean).length;
     extracted.extractionStatus = score >= 4 ? 'parsed' : score >= 2 ? 'partial' : 'unsupported';
     return extracted;
   }
@@ -392,7 +550,21 @@ export class UserService {
       const parser = new PDFParse({ data: new Uint8Array(data) });
       try {
         const parsed = await parser.getText();
-        return this.parseCrlvText(parsed.text || '');
+        const rawText = parsed.text || '';
+        const result = this.parseCrlvText(rawText);
+        this.logger.log(
+          `CRLV parse -> ${JSON.stringify({
+            make: result.make,
+            model: result.model,
+            year: result.year,
+            color: result.color,
+            fuelType: result.fuelType,
+            licensePlate: result.licensePlate,
+            status: result.extractionStatus,
+          })}`,
+        );
+        this.logger.log(`CRLV raw text (first 1500 chars): ${rawText.slice(0, 1500)}`);
+        return result;
       } finally {
         await parser.destroy();
       }
