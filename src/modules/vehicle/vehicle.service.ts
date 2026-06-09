@@ -5,6 +5,8 @@ import { Vehicle } from './entities/vehicle.entity';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { UserService } from '../user/user.service';
+import { VehicleStatus } from './enums/vehicle-status.enum';
+import { AdminEmailService } from '../admin/admin-email.service';
 
 @Injectable()
 export class VehicleService {
@@ -12,6 +14,7 @@ export class VehicleService {
     @InjectRepository(Vehicle)
     private vehicleRepository: Repository<Vehicle>,
     private userService: UserService,
+    private adminEmailService: AdminEmailService,
   ) {}
 
   async create(createVehicleDto: CreateVehicleDto, userId: string): Promise<Vehicle> {
@@ -26,9 +29,28 @@ export class VehicleService {
     }
     try {
       console.log('Creating vehicle with data:', createVehicleDto);
-      const vehicle = this.vehicleRepository.create(createVehicleDto);
+      const scheduling = this.normalizeSchedulingOptions(createVehicleDto);
+      // Auto-approve vehicle when owner already has verified documents.
+      const vehicle = this.vehicleRepository.create({
+        ...createVehicleDto,
+        ...scheduling,
+        status: VehicleStatus.ACTIVE,
+      });
+      console.log(
+        `Vehicle auto-approved for verified user: ownerId=${userId}, status=${VehicleStatus.ACTIVE}`,
+      );
       const savedVehicle = await this.vehicleRepository.save(vehicle);
       console.log('Vehicle created successfully:', savedVehicle.id);
+
+      void this.adminEmailService.sendVehicleAnnouncedNotification({
+        ownerName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'Locador',
+        ownerEmail: user.email,
+        vehicleTitle: `${savedVehicle.make} ${savedVehicle.model} ${savedVehicle.year}`,
+        city: savedVehicle.city,
+        state: savedVehicle.state,
+        dailyRate: Number(savedVehicle.dailyRate || 0),
+      });
+
       return savedVehicle;
     } catch (error) {
       console.error('Error creating vehicle:', error);
@@ -64,7 +86,8 @@ export class VehicleService {
 
   async update(id: string, updateVehicleDto: UpdateVehicleDto): Promise<Vehicle> {
     const vehicle = await this.findOne(id);
-    Object.assign(vehicle, updateVehicleDto);
+    const scheduling = this.normalizeSchedulingOptions(updateVehicleDto);
+    Object.assign(vehicle, updateVehicleDto, scheduling);
     return this.vehicleRepository.save(vehicle);
   }
 
@@ -255,5 +278,37 @@ export class VehicleService {
     }
 
     return query.getMany();
+  }
+
+  private normalizeSchedulingOptions(dto: Partial<CreateVehicleDto>): {
+    autoApproveBookings?: boolean;
+    pickupTimeStart?: string | null;
+    pickupTimeEnd?: string | null;
+  } {
+    const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    const autoApproveBookings = !!dto.autoApproveBookings;
+    const pickupTimeStart = dto.pickupTimeStart || null;
+    const pickupTimeEnd = dto.pickupTimeEnd || null;
+
+    if (pickupTimeStart && !timeRegex.test(pickupTimeStart)) {
+      throw new BadRequestException('pickupTimeStart deve estar no formato HH:mm');
+    }
+    if (pickupTimeEnd && !timeRegex.test(pickupTimeEnd)) {
+      throw new BadRequestException('pickupTimeEnd deve estar no formato HH:mm');
+    }
+    if (pickupTimeStart && pickupTimeEnd && pickupTimeStart >= pickupTimeEnd) {
+      throw new BadRequestException('pickupTimeEnd deve ser maior que pickupTimeStart');
+    }
+    if (autoApproveBookings && (!pickupTimeStart || !pickupTimeEnd)) {
+      throw new BadRequestException(
+        'Defina pickupTimeStart e pickupTimeEnd para ativar aprovação automática',
+      );
+    }
+
+    return {
+      autoApproveBookings,
+      pickupTimeStart,
+      pickupTimeEnd,
+    };
   }
 }

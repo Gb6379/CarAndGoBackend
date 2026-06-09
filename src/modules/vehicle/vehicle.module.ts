@@ -4,9 +4,10 @@ import { VehicleService } from './vehicle.service';
 import { VehicleController } from './vehicle.controller';
 import { Vehicle } from './entities/vehicle.entity';
 import { UserModule } from '../user/user.module';
+import { AdminModule } from '../admin/admin.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Vehicle]), UserModule],
+  imports: [TypeOrmModule.forFeature([Vehicle]), UserModule, AdminModule],
   controllers: [VehicleController],
   providers: [VehicleService],
   exports: [VehicleService],

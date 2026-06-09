@@ -88,4 +88,16 @@ export class CreateVehicleDto {
   @IsOptional()
   @IsArray()
   photos?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  autoApproveBookings?: boolean;
+
+  @IsOptional()
+  @IsString()
+  pickupTimeStart?: string;
+
+  @IsOptional()
+  @IsString()
+  pickupTimeEnd?: string;
 }

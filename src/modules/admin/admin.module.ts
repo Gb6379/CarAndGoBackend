@@ -9,5 +9,6 @@ import { AdminEmailService } from './admin-email.service';
   imports: [AuthModule, UserModule, BookingModule],
   controllers: [AdminController],
   providers: [AdminEmailService],
+  exports: [AdminEmailService],
 })
 export class AdminModule {}

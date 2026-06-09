@@ -6,9 +6,10 @@ import { PagSeguroService } from './services/pagseguro.service';
 import { MercadoPagoService } from './services/mercadopago.service';
 import { Booking } from '../booking/entities/booking.entity';
 import { User } from '../user/entities/user.entity';
+import { AdminModule } from '../admin/admin.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Booking, User])],
+  imports: [TypeOrmModule.forFeature([Booking, User]), AdminModule],
   controllers: [PaymentController],
   providers: [PaymentService, PagSeguroService, MercadoPagoService],
   exports: [PaymentService, PagSeguroService, MercadoPagoService],

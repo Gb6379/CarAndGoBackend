@@ -1,7 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
+import * as nodemailer from 'nodemailer';
 import { Booking } from './entities/booking.entity';
+import { Vehicle } from '../vehicle/entities/vehicle.entity';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { UpdateBookingDto } from './dto/update-booking.dto';
 import { BookingCalculationService } from './services/booking-calculation.service';
@@ -10,14 +13,28 @@ import { BookingStatus } from './enums/booking-status.enum';
 
 @Injectable()
 export class BookingService {
+  private readonly logger = new Logger(BookingService.name);
+  private transporter: nodemailer.Transporter | null | undefined;
+  private missingSmtpLogged = false;
+
   constructor(
     @InjectRepository(Booking)
     private bookingRepository: Repository<Booking>,
+    @InjectRepository(Vehicle)
+    private vehicleRepository: Repository<Vehicle>,
     private bookingCalculationService: BookingCalculationService,
     private routePlanningService: RoutePlanningService,
+    private configService: ConfigService,
   ) {}
 
   async create(createBookingDto: CreateBookingDto): Promise<Booking> {
+    const vehicle = await this.vehicleRepository.findOne({
+      where: { id: createBookingDto.vehicleId },
+    });
+    if (!vehicle) {
+      throw new NotFoundException('Vehicle not found');
+    }
+
     // Validate booking dates
     const startDate = new Date(createBookingDto.startDate);
     const endDate = new Date(createBookingDto.endDate);
@@ -84,6 +101,7 @@ export class BookingService {
 
     const booking = this.bookingRepository.create({
       ...createBookingDto,
+      status: vehicle.autoApproveBookings ? BookingStatus.CONFIRMED : (createBookingDto.status || BookingStatus.PENDING),
       startDate,
       endDate,
       totalAmount: calculation.totalAmount,
@@ -94,7 +112,13 @@ export class BookingService {
       scheduledRoute: routeData ? JSON.stringify(routeData.routePoints) : null,
     });
 
-    return this.bookingRepository.save(booking);
+    const savedBooking = await this.bookingRepository.save(booking);
+    if (vehicle.autoApproveBookings) {
+      void this.sendReadyToPayEmail(savedBooking.id);
+    } else {
+      void this.sendPendingApprovalEmail(savedBooking.id);
+    }
+    return savedBooking;
   }
 
   async findAll(): Promise<Booking[]> {
@@ -198,7 +222,9 @@ export class BookingService {
   async confirmBooking(id: string): Promise<Booking> {
     const booking = await this.findOne(id);
     booking.status = BookingStatus.CONFIRMED;
-    return this.bookingRepository.save(booking);
+    const savedBooking = await this.bookingRepository.save(booking);
+    void this.sendReadyToPayEmail(savedBooking.id);
+    return savedBooking;
   }
 
   async startTrip(id: string, startMileage: number): Promise<Booking> {
@@ -413,6 +439,130 @@ export class BookingService {
     } catch (error) {
       console.error('Error canceling overdue pending bookings:', error);
       return 0;
+    }
+  }
+
+  private getTransporter(): nodemailer.Transporter | null {
+    if (this.transporter !== undefined) {
+      return this.transporter;
+    }
+
+    const host = this.configService.get<string>('SMTP_HOST');
+    const user = this.configService.get<string>('SMTP_USER');
+    const pass = this.configService.get<string>('SMTP_PASS');
+    const port = Number(this.configService.get<string>('SMTP_PORT') || 587);
+    const secureValue = String(this.configService.get<string>('SMTP_SECURE') || '').toLowerCase();
+    const secure = secureValue ? secureValue === 'true' : port === 465;
+
+    if (!host || !user || !pass) {
+      if (!this.missingSmtpLogged) {
+        this.logger.warn('SMTP is not configured. Booking pending approval emails will be skipped.');
+        this.missingSmtpLogged = true;
+      }
+      this.transporter = null;
+      return this.transporter;
+    }
+
+    this.transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass },
+    });
+    return this.transporter;
+  }
+
+  private async sendPendingApprovalEmail(bookingId: string): Promise<void> {
+    try {
+      const booking = await this.bookingRepository.findOne({
+        where: { id: bookingId },
+        relations: ['lessee', 'lessor', 'vehicle'],
+      });
+      if (!booking?.lessor?.email) return;
+
+      const transporter = this.getTransporter();
+      if (!transporter) return;
+
+      const from =
+        this.configService.get<string>('SMTP_FROM') ||
+        this.configService.get<string>('SMTP_USER') ||
+        'no-reply@carandgo.com.br';
+
+      const vehicleTitle = `${booking.vehicle?.make || ''} ${booking.vehicle?.model || ''} ${booking.vehicle?.year || ''}`.trim();
+      const lesseeName = `${booking.lessee?.firstName || ''} ${booking.lessee?.lastName || ''}`.trim() || 'um locatário';
+
+      await transporter.sendMail({
+        from,
+        to: booking.lessor.email,
+        subject: 'Novo pedido de locação aguardando sua aprovação',
+        text: [
+          `Olá, ${booking.lessor.firstName || 'locador'}!`,
+          '',
+          `O veículo ${vehicleTitle} deu entrada no trâmite de locação e está aguardando sua aprovação.`,
+          `Locatário: ${lesseeName}.`,
+          `Período: ${new Date(booking.startDate).toLocaleDateString('pt-BR')} até ${new Date(booking.endDate).toLocaleDateString('pt-BR')}.`,
+          '',
+          'Acesse a plataforma CarGo para aprovar ou rejeitar a solicitação.',
+        ].join('\n'),
+        html: `
+          <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.6;">
+            <p>Olá, ${booking.lessor.firstName || 'locador'}!</p>
+            <p>O veículo <strong>${vehicleTitle}</strong> deu entrada no trâmite de locação e está aguardando sua aprovação.</p>
+            <p><strong>Locatário:</strong> ${lesseeName}</p>
+            <p><strong>Período:</strong> ${new Date(booking.startDate).toLocaleDateString('pt-BR')} até ${new Date(booking.endDate).toLocaleDateString('pt-BR')}</p>
+            <p>Acesse a plataforma CarGo para aprovar ou rejeitar a solicitação.</p>
+          </div>
+        `,
+      });
+    } catch (error: any) {
+      this.logger.error('Failed to send pending approval email to lessor', error?.stack || String(error));
+    }
+  }
+
+  private async sendReadyToPayEmail(bookingId: string): Promise<void> {
+    try {
+      const booking = await this.bookingRepository.findOne({
+        where: { id: bookingId },
+        relations: ['lessee', 'lessor', 'vehicle'],
+      });
+      if (!booking?.lessee?.email) return;
+
+      const transporter = this.getTransporter();
+      if (!transporter) return;
+
+      const from =
+        this.configService.get<string>('SMTP_FROM') ||
+        this.configService.get<string>('SMTP_USER') ||
+        'no-reply@carandgo.com.br';
+
+      const vehicleTitle = `${booking.vehicle?.make || ''} ${booking.vehicle?.model || ''} ${booking.vehicle?.year || ''}`.trim();
+
+      await transporter.sendMail({
+        from,
+        to: booking.lessee.email,
+        subject: 'Sua locação foi aprovada - você já pode pagar',
+        text: [
+          `Olá, ${booking.lessee.firstName || 'locatário'}!`,
+          '',
+          `A locação do veículo ${vehicleTitle} foi aprovada pelo locador.`,
+          'Agora você já pode realizar o pagamento para concluir a reserva.',
+          '',
+          `Período: ${new Date(booking.startDate).toLocaleDateString('pt-BR')} até ${new Date(booking.endDate).toLocaleDateString('pt-BR')}.`,
+          '',
+          'Acesse a plataforma CarGo para finalizar o pagamento.',
+        ].join('\n'),
+        html: `
+          <div style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.6;">
+            <p>Olá, ${booking.lessee.firstName || 'locatário'}!</p>
+            <p>A locação do veículo <strong>${vehicleTitle}</strong> foi aprovada pelo locador.</p>
+            <p>Agora você já pode realizar o pagamento para concluir a reserva.</p>
+            <p><strong>Período:</strong> ${new Date(booking.startDate).toLocaleDateString('pt-BR')} até ${new Date(booking.endDate).toLocaleDateString('pt-BR')}</p>
+            <p>Acesse a plataforma CarGo para finalizar o pagamento.</p>
+          </div>
+        `,
+      });
+    } catch (error: any) {
+      this.logger.error('Failed to send ready-to-pay email to lessee', error?.stack || String(error));
     }
   }
 }

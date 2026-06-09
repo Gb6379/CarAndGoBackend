@@ -6,9 +6,10 @@ import { BookingCalculationService } from './services/booking-calculation.servic
 import { RoutePlanningService } from './services/route-planning.service';
 import { BookingScheduler } from './booking.scheduler';
 import { Booking } from './entities/booking.entity';
+import { Vehicle } from '../vehicle/entities/vehicle.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Booking])],
+  imports: [TypeOrmModule.forFeature([Booking, Vehicle])],
   controllers: [BookingController],
   providers: [BookingService, BookingCalculationService, RoutePlanningService, BookingScheduler],
   exports: [BookingService, BookingCalculationService, RoutePlanningService],

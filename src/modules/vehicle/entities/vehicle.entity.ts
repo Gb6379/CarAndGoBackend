@@ -136,6 +136,15 @@ export class Vehicle extends BaseEntity {
   @Column('text', { array: true, default: [] })
   photos: string[];
 
+  @Column({ default: false })
+  autoApproveBookings: boolean;
+
+  @Column({ type: 'varchar', length: 5, nullable: true })
+  pickupTimeStart: string | null;
+
+  @Column({ type: 'varchar', length: 5, nullable: true })
+  pickupTimeEnd: string | null;
+
   @Column({ nullable: true })
   thumbnail: string; // Foto principal
 

@@ -7,6 +7,7 @@ import { MercadoPagoService } from './services/mercadopago.service';
 import { Booking } from '../booking/entities/booking.entity';
 import { BookingStatus } from '../booking/enums/booking-status.enum';
 import { User } from '../user/entities/user.entity';
+import { AdminEmailService } from '../admin/admin-email.service';
 
 type PaymentGateway = 'mercadopago' | 'pagbank';
 
@@ -16,6 +17,7 @@ export class PaymentService {
     private configService: ConfigService,
     private pagSeguroService: PagSeguroService,
     private mercadoPagoService: MercadoPagoService,
+    private adminEmailService: AdminEmailService,
     @InjectRepository(Booking)
     private bookingRepository: Repository<Booking>,
     @InjectRepository(User)
@@ -92,6 +94,7 @@ export class PaymentService {
       throw new NotFoundException('Booking not found for this payment');
     }
 
+    const wasPaidBefore = String(booking.paymentStatus || '').toUpperCase() === 'PAID';
     // Update booking payment status
     const paymentStatus = this.getGatewayServiceByTransactionId(
       paymentId,
@@ -117,6 +120,14 @@ export class PaymentService {
     }
 
     await this.bookingRepository.save(booking);
+    if (
+      !wasPaidBefore &&
+      this.getGatewayServiceByTransactionId(paymentId).isPaymentSuccessful(
+        transaction.status,
+      )
+    ) {
+      await this.notifyBookingPaid(booking.id);
+    }
 
     return {
       paymentId,
@@ -146,6 +157,7 @@ export class PaymentService {
     );
 
     if (booking) {
+      const wasPaidBefore = String(booking.paymentStatus || '').toUpperCase() === 'PAID';
       const paymentStatus =
         this.pagSeguroService.getPaymentStatusDescription(transaction.status);
       booking.paymentStatus =
@@ -160,6 +172,9 @@ export class PaymentService {
       }
 
       await this.bookingRepository.save(booking);
+      if (!wasPaidBefore && this.pagSeguroService.isPaymentSuccessful(transaction.status)) {
+        await this.notifyBookingPaid(booking.id);
+      }
     }
 
     return {
@@ -182,6 +197,7 @@ export class PaymentService {
     );
 
     if (booking) {
+      const wasPaidBefore = String(booking.paymentStatus || '').toUpperCase() === 'PAID';
       const paymentStatus =
         this.mercadoPagoService.getPaymentStatusDescription(transaction.status);
       booking.paymentStatus =
@@ -201,6 +217,9 @@ export class PaymentService {
       }
 
       await this.bookingRepository.save(booking);
+      if (!wasPaidBefore && this.mercadoPagoService.isPaymentSuccessful(transaction.status)) {
+        await this.notifyBookingPaid(booking.id);
+      }
     }
 
     return {
@@ -354,6 +373,7 @@ export class PaymentService {
     booking.paymentDate = new Date();
     booking.status = BookingStatus.CONFIRMED;
     await this.bookingRepository.save(booking);
+    await this.notifyBookingPaid(booking.id);
 
     return {
       success: true,
@@ -418,5 +438,31 @@ export class PaymentService {
     }
 
     return null;
+  }
+
+  private async notifyBookingPaid(bookingId: string): Promise<void> {
+    const booking = await this.bookingRepository.findOne({
+      where: { id: bookingId },
+      relations: ['lessee', 'lessor', 'vehicle'],
+    });
+    if (!booking) return;
+
+    const start = new Date(booking.startDate);
+    const end = new Date(booking.endDate);
+    const totalDays = Math.ceil(
+      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24),
+    );
+    const isMonthly = totalDays >= 28;
+
+    await this.adminEmailService.sendBookingPaidNotification({
+      vehicleTitle: `${booking.vehicle?.make || ''} ${booking.vehicle?.model || ''} ${booking.vehicle?.year || ''}`.trim(),
+      bookingId: booking.id,
+      lesseeName: `${booking.lessee?.firstName || ''} ${booking.lessee?.lastName || ''}`.trim() || 'Locatário',
+      lessorName: `${booking.lessor?.firstName || ''} ${booking.lessor?.lastName || ''}`.trim() || 'Locador',
+      amount: Number(booking.totalAmount || 0),
+      startDate: start,
+      endDate: end,
+      isMonthly,
+    });
   }
 }
